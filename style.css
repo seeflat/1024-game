@@ -92,6 +92,10 @@ body {
   box-shadow: none;
 }
 
+.tile-label {
+  display: inline-block;
+}
+
 .win-overlay {
   position: absolute;
   inset: -8px;

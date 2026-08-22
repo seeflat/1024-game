@@ -214,6 +214,7 @@ const EASE = "cubic-bezier(0.16, 1, 0.3, 1)"; // ~easeOutExpo
 
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
+let labelEls = null; // [r][c] -> .tile-label element, the part that counter-rotates
 const winOverlay = document.getElementById("winOverlay");
 const winMovesEl = document.getElementById("winMoves");
 const winHintEl = document.getElementById("winHint");
@@ -238,30 +239,37 @@ function nextFrame() {
 function buildBoardDOM() {
   boardEl.innerHTML = "";
   cellEls = [];
+  labelEls = [];
   for (let r = 0; r < SIZE; r++) {
     cellEls.push([]);
+    labelEls.push([]);
     for (let c = 0; c < SIZE; c++) {
       const cellWrap = document.createElement("div");
       cellWrap.className = "tile-cell";
       const tile = document.createElement("div");
       tile.className = "tile empty";
+      const label = document.createElement("span");
+      label.className = "tile-label";
+      tile.appendChild(label);
       cellWrap.appendChild(tile);
       boardEl.appendChild(cellWrap);
       cellEls[r].push(tile);
+      labelEls[r].push(label);
     }
   }
 }
 
 function paintCell(r, c, value) {
   const tile = cellEls[r][c];
+  const label = labelEls[r][c];
   if (value === 0) {
     tile.classList.add("empty");
-    tile.textContent = "";
+    label.textContent = "";
     tile.style.background = "";
   } else {
     tile.classList.remove("empty");
     tile.style.background = COLORS[value] || "#0f172a";
-    tile.textContent = value;
+    label.textContent = value;
   }
 }
 
@@ -295,28 +303,38 @@ function newGame() {
   genNote.textContent = `Solvable in ${solutionLength} move${solutionLength === 1 ? "" : "s"}.`;
 }
 
-// Rotates the whole board container, while every tile simultaneously
-// counter-rotates so its number stays upright throughout the spin — the
-// original's signature visual trick (anime.js timeline offset by -400ms on
-// a 500ms rotation; reproduced here as a 100ms-delayed 500ms counter-spin).
-async function animateRotate(dir) {
+// Rotates the whole board container — tile squares and all — while every
+// tile's number counter-rotates so it stays upright throughout the spin.
+// Confirmed against a recording of the original: the colored tile squares
+// visibly turn into diamonds mid-spin along with the board, and only the
+// digits stay horizontal, so the counter-rotation belongs on the text
+// label alone, not the tile (which would keep the whole square upright
+// and just swing its position instead of visibly rotating).
+//
+// Only the board's own rotation is awaited. The counter-spin starts 100ms
+// later, so it's still ~80% through when the board's tween ends — waiting
+// for it too would leave the board sitting flat with the pre-move values
+// for that last stretch (its transform has already snapped back to 0deg
+// the instant its own animation finishes), which reads as the grid
+// flashing back to the wrong layout right before paintBoard corrects it.
+// Returning as soon as the board itself is done lets the data swap happen
+// at that exact moment, so the trailing counter-spin settles over the
+// already-correct values instead of stale ones.
+function animateRotate(dir) {
   const deg = dir === "left" ? -90 : 90;
   const boardAnim = boardEl.animate(
     [{ transform: "rotate(0deg)" }, { transform: `rotate(${deg}deg)` }],
     { duration: 500, easing: EASE }
   );
-  const tileAnims = [];
   for (let r = 0; r < SIZE; r++) {
     for (let c = 0; c < SIZE; c++) {
-      tileAnims.push(
-        cellEls[r][c].animate(
-          [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
-          { duration: 500, delay: 100, easing: EASE }
-        )
+      labelEls[r][c].animate(
+        [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
+        { duration: 500, delay: 100, easing: EASE }
       );
     }
   }
-  await Promise.all([boardAnim.finished, ...tileAnims.map((a) => a.finished)]);
+  return boardAnim.finished;
 }
 
 // Drives the animated fall/merge from gravityMergePass — the exact same
@@ -342,8 +360,8 @@ async function gravityAndMergeAnimated() {
         board[ev.r][ev.c] = ev.value;
         paintCell(ev.r, ev.c, ev.value);
         return el.animate(
-          [{ transform: "scale(1)" }, { transform: "scale(1.25)" }, { transform: "scale(1)" }],
-          { duration: 200, easing: "ease-in-out" }
+          [{ transform: "scale(1)" }, { transform: "scale(1.5)" }, { transform: "scale(1)" }],
+          { duration: 250, easing: "ease-in-out" }
         ).finished;
       }
       const px = ev.rows * STEP;
