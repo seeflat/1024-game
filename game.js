@@ -43,40 +43,63 @@ function rotateCW(b) {
   return res;
 }
 
-// Merges a line of tiles (no zeros) toward its end, classic 2048 rules:
-// each tile merges into at most one new tile per move.
-function mergeTowardEnd(arr) {
-  const res = [];
-  let i = 0;
-  while (i < arr.length) {
-    if (i + 1 < arr.length && arr[i] === arr[i + 1]) {
-      res.push(arr[i] * 2);
-      i += 2;
-    } else {
-      res.push(arr[i]);
-      i += 1;
+// Runs one pass of gravity: for each column, scan bottom-up (skipping the
+// floor row) and drop each tile through any empty run beneath it, merging
+// it into an equal neighbor it lands on. Note this allows chain merges
+// across passes within the same move — a 16+16 that becomes 32 can go on
+// to merge with an adjacent 32 in a later pass of the *same* move. That's
+// deliberate: it's how the original's board settles (verified against its
+// decompiled source), not standard single-merge-per-tile 2048 rules. This
+// is the single source of truth for the physics — both the solver and the
+// animated renderer drive off it, so what the solver proves solvable is
+// exactly what the animated board will actually do.
+//
+// Returns { board, events }, where events describe what moved/merged this
+// pass in row/column terms (no pixels — that's the renderer's job):
+//   { kind: "fall", r, c, rows }  — tile that WAS at (r, c) fell `rows` rows
+//   { kind: "merge", r, c, value } — tile landing at (r, c) merged to `value`
+function gravityMergePass(board) {
+  const q = cloneBoard(board);
+  const events = [];
+
+  for (let ie = 1; ie < SIZE; ie++) {
+    const sourceRow = SIZE - ie - 1;
+    const lowerRow = SIZE - ie;
+    for (let c = 0; c < SIZE; c++) {
+      let rowsMoved = 0;
+      for (let ue = lowerRow; ue < SIZE && q[ue][c] === 0; ue++) {
+        if (q[ue - 1][c] !== 0) {
+          q[ue][c] = q[ue - 1][c];
+          q[ue - 1][c] = 0;
+          rowsMoved += 1;
+        }
+      }
+      if (q[lowerRow][c] !== 0 && q[sourceRow][c] === q[lowerRow][c]) {
+        q[lowerRow][c] *= 2;
+        q[sourceRow][c] = 0;
+        rowsMoved += 1;
+        events.push({ kind: "merge", r: lowerRow, c, value: q[lowerRow][c] });
+      }
+      if (rowsMoved > 0) events.push({ kind: "fall", r: sourceRow, c, rows: rowsMoved });
     }
   }
-  return res;
+
+  return { board: q, events };
 }
 
-// Gravity pulls every tile to the bottom of its column, merging equal
-// adjacent tiles as they land.
-function gravityMerge(board) {
-  const res = emptyBoard();
-  for (let c = 0; c < SIZE; c++) {
-    const col = [];
-    for (let r = 0; r < SIZE; r++) if (board[r][c] !== 0) col.push(board[r][c]);
-    const merged = mergeTowardEnd(col);
-    const pad = SIZE - merged.length;
-    for (let r = 0; r < SIZE; r++) res[r][c] = r < pad ? 0 : merged[r - pad];
+// Runs passes until the board is stable.
+function gravityMergeFull(board) {
+  let b = board;
+  while (true) {
+    const { board: next, events } = gravityMergePass(b);
+    if (events.length === 0) return b;
+    b = next;
   }
-  return res;
 }
 
 function applyMove(board, dir) {
   const rotated = dir === "left" ? rotateCCW(board) : rotateCW(board);
-  return gravityMerge(rotated);
+  return gravityMergeFull(rotated);
 }
 
 function isWon(board) {
@@ -174,6 +197,20 @@ function generatePuzzle() {
 }
 
 // ---- UI wiring ----
+//
+// The original renders the grid as 16 fixed, keyed cells and animates them
+// in place (rotate the board while counter-rotating each tile so the
+// numbers stay upright, then cascade gravity/merges over several passes
+// with translateY slides and a merge scale-pulse) rather than tearing down
+// and rebuilding the DOM on every move. That in-place, multi-pass approach
+// is what actually reads as "smooth" — this mirrors it directly instead of
+// re-rendering from scratch each move.
+
+const CELL = 56; // px, matches the 56px tile size in style.css
+const GAP = 8; // px, matches the board's grid gap
+const STEP = CELL + GAP; // px moved per row of fall
+
+const EASE = "cubic-bezier(0.16, 1, 0.3, 1)"; // ~easeOutExpo
 
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
@@ -192,26 +229,44 @@ let moves = 0;
 let solutionLength = 0;
 let animating = false;
 let won = false;
+let cellEls = null; // [r][c] -> .tile element, created once and reused
 
-function renderCells() {
+function nextFrame() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function buildBoardDOM() {
   boardEl.innerHTML = "";
+  cellEls = [];
   for (let r = 0; r < SIZE; r++) {
+    cellEls.push([]);
     for (let c = 0; c < SIZE; c++) {
-      const cell = document.createElement("div");
-      cell.className = "tile-cell";
-      cell.dataset.r = r;
-      cell.dataset.c = c;
-      const v = board[r][c];
-      if (v !== 0) {
-        const tile = document.createElement("div");
-        tile.className = "tile";
-        tile.style.background = COLORS[v] || "#0f172a";
-        tile.textContent = v;
-        cell.appendChild(tile);
-      }
-      boardEl.appendChild(cell);
+      const cellWrap = document.createElement("div");
+      cellWrap.className = "tile-cell";
+      const tile = document.createElement("div");
+      tile.className = "tile empty";
+      cellWrap.appendChild(tile);
+      boardEl.appendChild(cellWrap);
+      cellEls[r].push(tile);
     }
   }
+}
+
+function paintCell(r, c, value) {
+  const tile = cellEls[r][c];
+  if (value === 0) {
+    tile.classList.add("empty");
+    tile.textContent = "";
+    tile.style.background = "";
+  } else {
+    tile.classList.remove("empty");
+    tile.style.background = COLORS[value] || "#0f172a";
+    tile.textContent = value;
+  }
+}
+
+function paintBoard(b) {
+  for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) paintCell(r, c, b[r][c]);
 }
 
 function updateStatus() {
@@ -235,32 +290,82 @@ function newGame() {
   rotateLeftBtn.classList.remove("hidden");
   rotateRightBtn.classList.remove("hidden");
   updateStatus();
-  renderCells();
+  buildBoardDOM();
+  paintBoard(board);
   genNote.textContent = `Solvable in ${solutionLength} move${solutionLength === 1 ? "" : "s"}.`;
 }
 
-function resetGame() {
-  if (moves === 0) return;
-  board = cloneBoard(initialBoard);
-  moves = 0;
-  won = false;
-  animating = false;
-  winOverlay.classList.add("hidden");
-  updateStatus();
-  renderCells();
+// Rotates the whole board container, while every tile simultaneously
+// counter-rotates so its number stays upright throughout the spin — the
+// original's signature visual trick (anime.js timeline offset by -400ms on
+// a 500ms rotation; reproduced here as a 100ms-delayed 500ms counter-spin).
+async function animateRotate(dir) {
+  const deg = dir === "left" ? -90 : 90;
+  const boardAnim = boardEl.animate(
+    [{ transform: "rotate(0deg)" }, { transform: `rotate(${deg}deg)` }],
+    { duration: 500, easing: EASE }
+  );
+  const tileAnims = [];
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      tileAnims.push(
+        cellEls[r][c].animate(
+          [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
+          { duration: 500, delay: 100, easing: EASE }
+        )
+      );
+    }
+  }
+  await Promise.all([boardAnim.finished, ...tileAnims.map((a) => a.finished)]);
+}
+
+// Drives the animated fall/merge from gravityMergePass — the exact same
+// function the solver uses — so the board the player actually reaches is
+// guaranteed to match what was proven solvable. Passes repeat until
+// nothing moves, which produces the cascading, staged falls (rather than
+// tiles teleporting straight to their final resting row) and lets chain
+// merges play out visually across passes, one merge-pulse/fall-slide at a
+// time.
+async function gravityAndMergeAnimated() {
+  while (true) {
+    const { board: next, events } = gravityMergePass(board);
+    if (events.length === 0) return;
+
+    const anims = events.map((ev) => {
+      if (ev.kind === "merge") {
+        board[ev.r][ev.c] = ev.value;
+        paintCell(ev.r, ev.c, ev.value);
+        return cellEls[ev.r][ev.c].animate(
+          [{ transform: "scale(1)" }, { transform: "scale(1.25)" }, { transform: "scale(1)" }],
+          { duration: 200, easing: "ease-in-out" }
+        ).finished;
+      }
+      const px = ev.rows * STEP;
+      return cellEls[ev.r][ev.c].animate(
+        [{ transform: "translateY(0px)" }, { transform: `translateY(${px}px)` }],
+        { duration: 500, easing: "ease-in" }
+      ).finished;
+    });
+
+    await Promise.all(anims);
+    board = next;
+    paintBoard(board);
+    await nextFrame();
+  }
 }
 
 async function doMove(dir) {
   if (animating || won || !board) return;
   animating = true;
 
-  boardEl.classList.add(dir === "left" ? "spin-left" : "spin-right");
-  await wait(260);
-  boardEl.classList.remove("spin-left", "spin-right");
+  await animateRotate(dir);
+  board = dir === "left" ? rotateCCW(board) : rotateCW(board);
+  paintBoard(board);
+  await nextFrame();
 
-  board = applyMove(board, dir);
+  await gravityAndMergeAnimated();
+
   moves += 1;
-  renderCells();
   updateStatus();
 
   if (isWon(board)) {
@@ -273,8 +378,32 @@ async function doMove(dir) {
   animating = false;
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// A translateX wiggle on the board, matching the original's reset shake —
+// the data resets instantly underneath it, the shake is just a flourish.
+async function resetGame() {
+  if (animating || moves === 0) return;
+  animating = true;
+  won = false;
+  winOverlay.classList.add("hidden");
+
+  board = cloneBoard(initialBoard);
+  moves = 0;
+  updateStatus();
+  paintBoard(board);
+
+  const shake = boardEl.animate(
+    [
+      { transform: "translateX(0px)" },
+      { transform: "translateX(-25px)" },
+      { transform: "translateX(25px)" },
+      { transform: "translateX(-12.5px)" },
+      { transform: "translateX(12.5px)" },
+      { transform: "translateX(0px)" },
+    ],
+    { duration: 350, easing: EASE }
+  );
+  await shake.finished;
+  animating = false;
 }
 
 rotateLeftBtn.addEventListener("click", () => doMove("left"));

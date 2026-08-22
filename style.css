@@ -65,11 +65,7 @@ body {
   grid-template-columns: repeat(4, 1fr);
   grid-template-rows: repeat(4, 1fr);
   gap: 8px;
-  transition: transform 260ms cubic-bezier(.34,1.56,.64,1);
 }
-
-.board.spin-left { transform: rotate(-90deg); }
-.board.spin-right { transform: rotate(90deg); }
 
 .tile-cell {
   border-radius: 10px;
@@ -89,21 +85,11 @@ body {
   color: #fff;
   font-size: 1rem;
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
-  transition: background-color 200ms ease;
-  animation: pop 180ms ease;
 }
 
-@keyframes pop {
-  from { transform: scale(0.7); opacity: 0.4; }
-  to { transform: scale(1); opacity: 1; }
-}
-
-.tile.merged { animation: merge-pulse 260ms ease; }
-
-@keyframes merge-pulse {
-  0% { transform: scale(1); }
-  40% { transform: scale(1.18); }
-  100% { transform: scale(1); }
+.tile.empty {
+  background: transparent !important;
+  box-shadow: none;
 }
 
 .win-overlay {
