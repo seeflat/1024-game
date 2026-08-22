@@ -331,23 +331,30 @@ async function gravityAndMergeAnimated() {
     const { board: next, events } = gravityMergePass(board);
     if (events.length === 0) return;
 
+    // Tiles are stacked in DOM/paint order by (r, c), so a tile sliding
+    // downward via translateY visually enters later cells' space and would
+    // paint underneath them. Bump z-index for the duration of the animation
+    // so falling/merging tiles stay on top while they cross that space.
     const anims = events.map((ev) => {
+      const el = cellEls[ev.r][ev.c];
+      el.style.zIndex = "2";
       if (ev.kind === "merge") {
         board[ev.r][ev.c] = ev.value;
         paintCell(ev.r, ev.c, ev.value);
-        return cellEls[ev.r][ev.c].animate(
+        return el.animate(
           [{ transform: "scale(1)" }, { transform: "scale(1.25)" }, { transform: "scale(1)" }],
           { duration: 200, easing: "ease-in-out" }
         ).finished;
       }
       const px = ev.rows * STEP;
-      return cellEls[ev.r][ev.c].animate(
+      return el.animate(
         [{ transform: "translateY(0px)" }, { transform: `translateY(${px}px)` }],
         { duration: 500, easing: "ease-in" }
       ).finished;
     });
 
     await Promise.all(anims);
+    for (const ev of events) cellEls[ev.r][ev.c].style.zIndex = "";
     board = next;
     paintBoard(board);
     await nextFrame();
