@@ -320,21 +320,34 @@ function newGame() {
 // Returning as soon as the board itself is done lets the data swap happen
 // at that exact moment, so the trailing counter-spin settles over the
 // already-correct values instead of stale ones.
+// Returns { boardDone, allDone }: boardDone resolves as soon as the board's
+// own rotation ends (used to swap data early, see doMove), allDone resolves
+// once the trailing counter-spin has also finished. The caller must await
+// allDone before letting another move start any new rotate animation on
+// these same label elements — starting one while the previous counter-spin
+// is still running would hard-reset it to its 0% keyframe (rotate(0deg))
+// instantly, which reads as the number glitching to a different angle.
 function animateRotate(dir) {
   const deg = dir === "left" ? -90 : 90;
   const boardAnim = boardEl.animate(
     [{ transform: "rotate(0deg)" }, { transform: `rotate(${deg}deg)` }],
     { duration: 500, easing: EASE }
   );
+  const labelFinished = [];
   for (let r = 0; r < SIZE; r++) {
     for (let c = 0; c < SIZE; c++) {
-      labelEls[r][c].animate(
-        [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
-        { duration: 500, delay: 100, easing: EASE }
+      labelFinished.push(
+        labelEls[r][c].animate(
+          [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
+          { duration: 500, delay: 100, easing: EASE }
+        ).finished
       );
     }
   }
-  return boardAnim.finished;
+  return {
+    boardDone: boardAnim.finished,
+    allDone: Promise.all([boardAnim.finished, ...labelFinished]),
+  };
 }
 
 // Drives the animated fall/merge from gravityMergePass — the exact same
@@ -353,26 +366,43 @@ async function gravityAndMergeAnimated() {
     // downward via translateY visually enters later cells' space and would
     // paint underneath them. Bump z-index for the duration of the animation
     // so falling/merging tiles stay on top while they cross that space.
+    // Both fall and merge land with a squash-and-stretch overshoot rather
+    // than stopping rigidly: a fall stretches taller (from its top edge,
+    // since it's still moving downward when it overshoots) and a merge
+    // pulses from its center, both settling back to scale(1) at the end.
     const anims = events.map((ev) => {
       const el = cellEls[ev.r][ev.c];
       el.style.zIndex = "2";
       if (ev.kind === "merge") {
         board[ev.r][ev.c] = ev.value;
         paintCell(ev.r, ev.c, ev.value);
+        el.style.transformOrigin = "center";
         return el.animate(
-          [{ transform: "scale(1)" }, { transform: "scale(1.5)" }, { transform: "scale(1)" }],
+          [
+            { transform: "scale(1, 1)" },
+            { transform: "scale(1.15, 1.6)" },
+            { transform: "scale(1, 1)" },
+          ],
           { duration: 250, easing: "ease-in-out" }
         ).finished;
       }
       const px = ev.rows * STEP;
+      el.style.transformOrigin = "top";
       return el.animate(
-        [{ transform: "translateY(0px)" }, { transform: `translateY(${px}px)` }],
+        [
+          { transform: "translateY(0px) scaleY(1)" },
+          { transform: `translateY(${px * 0.85}px) scaleY(1.25)`, offset: 0.85 },
+          { transform: `translateY(${px}px) scaleY(1)` },
+        ],
         { duration: 500, easing: "ease-in" }
       ).finished;
     });
 
     await Promise.all(anims);
-    for (const ev of events) cellEls[ev.r][ev.c].style.zIndex = "";
+    for (const ev of events) {
+      cellEls[ev.r][ev.c].style.zIndex = "";
+      cellEls[ev.r][ev.c].style.transformOrigin = "";
+    }
     board = next;
     paintBoard(board);
     await nextFrame();
@@ -383,12 +413,17 @@ async function doMove(dir) {
   if (animating || won || !board) return;
   animating = true;
 
-  await animateRotate(dir);
+  const rotateAnim = animateRotate(dir);
+  await rotateAnim.boardDone;
   board = dir === "left" ? rotateCCW(board) : rotateCW(board);
   paintBoard(board);
   await nextFrame();
 
   await gravityAndMergeAnimated();
+  // Gravity may finish almost instantly (board already settled), so make
+  // sure the trailing label counter-spin is done too before releasing the
+  // lock — otherwise a fast next move could interrupt it mid-spin.
+  await rotateAnim.allDone;
 
   moves += 1;
   updateStatus();
