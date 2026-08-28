@@ -65,6 +65,7 @@ body {
   grid-template-columns: repeat(4, 1fr);
   grid-template-rows: repeat(4, 1fr);
   gap: 8px;
+  transform-origin: 50% 50%;
 }
 
 .tile-cell {
@@ -77,6 +78,7 @@ body {
   position: absolute;
   inset: 0;
   border-radius: 10px;
+  transform-origin: 50% 50%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -136,6 +138,12 @@ body {
   justify-content: space-between;
   width: 264px;
   min-height: 40px;
+  transition: opacity 0.2s ease;
+}
+
+.controls.dimmed {
+  opacity: 0.1;
+  pointer-events: none;
 }
 
 .icon-btn {

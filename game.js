@@ -5,6 +5,12 @@
 // so the page hung on a loading spinner forever. This version generates and
 // verifies solvable puzzles entirely client-side, so there's no server to go
 // down.
+//
+// The rotate/settle animation below is a direct port of the original's Vue
+// `HomeView.vue` (its compiled `setup()` — rotate the board container while
+// every tile counter-rotates to stay upright, then settle tiles one row per
+// pass with an elastic drop and a scale-pulse on each merge). It's the same
+// choreography, moved onto a persistent 16-cell DOM and driven by anime.js.
 
 const SIZE = 4;
 
@@ -49,13 +55,17 @@ function rotateCW(b) {
 // across passes within the same move — a 16+16 that becomes 32 can go on
 // to merge with an adjacent 32 in a later pass of the *same* move. That's
 // deliberate: it's how the original's board settles (verified against its
-// decompiled source), not standard single-merge-per-tile 2048 rules. This
-// is the single source of truth for the physics — both the solver and the
-// animated renderer drive off it, so what the solver proves solvable is
-// exactly what the animated board will actually do.
+// decompiled source), not standard single-merge-per-tile 2048 rules.
+//
+// This is the solver's ground truth for the physics. The animated renderer
+// (rotate(), further down) settles the board with the original's own
+// row-at-a-time pass instead; that pass converges to the exact same stable
+// board this does — both are just "gravity, then merge equal vertical
+// neighbours, repeat until nothing moves" — so what the solver proves
+// solvable is exactly what the animated board ends up showing.
 //
 // Returns { board, events }, where events describe what moved/merged this
-// pass in row/column terms (no pixels — that's the renderer's job):
+// pass in row/column terms:
 //   { kind: "fall", r, c, rows }  — tile that WAS at (r, c) fell `rows` rows
 //   { kind: "merge", r, c, value } — tile landing at (r, c) merged to `value`
 function gravityMergePass(board) {
@@ -95,66 +105,6 @@ function gravityMergeFull(board) {
     if (events.length === 0) return b;
     b = next;
   }
-}
-
-// ---- Animation-only physics ----
-//
-// gravityMergePass (above) is the solver's ground truth: it bundles a
-// gap-close and a merge-check into one pass, which is exactly right for
-// proving a puzzle solvable. But it's the wrong shape for the animated
-// renderer, which needs "everything drops" and "everything combines" as
-// two genuinely separate, sequential steps rather than one pass animated
-// all at once. closeGaps and combineAdjacent below split that same rule
-// into those two steps. Repeatedly alternating them (drop, combine, drop,
-// combine, ...) until neither produces an event converges to the exact
-// same final board as gravityMergeFull -- both are just "gravity, then
-// merge equal neighbors, repeat" -- so the animated board still always
-// matches what the solver proved solvable. Only the renderer uses these;
-// the solver keeps using gravityMergePass/gravityMergeFull untouched.
-
-// Pushes every column's tiles down as far as they can go, closing empty
-// gaps. No merge check at all -- that's combineAdjacent's job below.
-function closeGaps(board) {
-  const q = cloneBoard(board);
-  const events = [];
-  for (let c = 0; c < SIZE; c++) {
-    const values = [];
-    for (let r = 0; r < SIZE; r++) if (board[r][c] !== 0) values.push({ r, v: board[r][c] });
-    const startRow = SIZE - values.length;
-    for (let i = 0; i < values.length; i++) {
-      const { r, v } = values[i];
-      const dest = startRow + i;
-      q[dest][c] = v;
-      if (dest !== r) events.push({ kind: "fall", r, c, rows: dest - r });
-    }
-    for (let r = 0; r < startRow; r++) q[r][c] = 0;
-  }
-  return { board: q, events };
-}
-
-// Given a board whose columns are already gap-free (i.e. just run through
-// closeGaps), checks bottom-up for directly-touching equal pairs and
-// merges the bottom-most one in each column. Only one merge per column per
-// call, matching gravityMergePass: it never resolves more than the
-// bottom-most pair in a single pass either, since consuming that pair
-// shifts everything above it before any higher pair gets a chance to be
-// checked. A column with more than one eligible pair (e.g. a separate
-// equal pair further up) gets the rest on a later call, once the closeGaps
-// in between has re-closed the gap the first merge left behind.
-function combineAdjacent(board) {
-  const q = cloneBoard(board);
-  const events = [];
-  for (let c = 0; c < SIZE; c++) {
-    for (let r = SIZE - 1; r > 0; r--) {
-      if (q[r][c] !== 0 && q[r][c] === q[r - 1][c]) {
-        q[r][c] *= 2;
-        q[r - 1][c] = 0;
-        events.push({ kind: "merge", r, c, value: q[r][c] });
-        break;
-      }
-    }
-  }
-  return { board: q, events };
 }
 
 function applyMove(board, dir) {
@@ -258,26 +208,26 @@ function generatePuzzle() {
 
 // ---- UI wiring ----
 //
-// The original renders the grid as 16 fixed, keyed cells and animates them
-// in place (rotate the board while counter-rotating each tile so the
-// numbers stay upright, then cascade gravity/merges over several passes
-// with translateY slides and a merge scale-pulse) rather than tearing down
-// and rebuilding the DOM on every move. That in-place, multi-pass approach
-// is what actually reads as "smooth" — this mirrors it directly instead of
-// re-rendering from scratch each move.
+// Port of the original `HomeView.vue` setup() logic. The board is a fixed
+// grid of 16 cells built once and repainted in place (never torn down),
+// exactly like the original's keyed cells. anime.js drives the same two
+// visual phases the original used:
+//
+//   1. rotate  — spin the board container by ±90° while every tile spins
+//      the opposite way, so tile squares and their numbers stay upright
+//      through the turn. Then the data matrix is actually rotated and the
+//      spin is snapped back to flat.
+//   2. settle  — repeatedly, in one pass: drop every tile that can move
+//      down a row (elastic translateY, anime.js' default easing) and merge
+//      every tile resting on an equal one (scale-pulse on the survivor).
+//      Repaint between passes, until a pass moves nothing.
 
-const CELL = 56; // px, matches the 56px tile size in style.css
+const CELL = 56; // px, matches the .tile size in style.css
 const GAP = 8; // px, matches the board's grid gap
-const STEP = CELL + GAP; // px moved per row of fall
-
-const EASE = "cubic-bezier(0.16, 1, 0.3, 1)"; // ~easeOutExpo
-
-const ROTATE_TO_DROP_PAUSE = 400; // ms of stillness after rotation settles, before gravity starts
-const STEP_PAUSE = 150; // ms of stillness between each drop/combine step
+const STEP = CELL + GAP; // px moved per row of fall (the original used a flat 64)
 
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
-let labelEls = null; // [r][c] -> .tile-label element, the part that counter-rotates
 const winOverlay = document.getElementById("winOverlay");
 const winMovesEl = document.getElementById("winMoves");
 const winHintEl = document.getElementById("winHint");
@@ -286,53 +236,89 @@ const rotateLeftBtn = document.getElementById("rotateLeftBtn");
 const rotateRightBtn = document.getElementById("rotateRightBtn");
 const playAgainBtn = document.getElementById("playAgainBtn");
 const genNote = document.getElementById("genNote");
+const controlsEl = document.querySelector(".controls");
 
-let initialBoard = null;
-let board = null;
+let initialBoard = null; // the puzzle's starting grid, restored on reset
+let board = null; // current 4x4 grid
 let moves = 0;
 let solutionLength = 0;
-let animating = false;
+let animating = false; // true while a rotate/reset animation is playing
 let won = false;
-let cellEls = null; // [r][c] -> .tile element, created once and reused
 
-function nextFrame() {
-  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-}
+let tileEls = null; // [r][c] -> .tile element (created once, reused)
+let labelEls = null; // [r][c] -> .tile-label element
+let allTileEls = []; // flat list of every .tile, for the counter-rotation
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Lets the browser paint the repainted board (and flush anime.js' transform
+// reset) before the next settle pass starts — the vanilla stand-in for the
+// original's `await nextTick()`. Falls back to a timer so it still resolves
+// in a backgrounded tab, where requestAnimationFrame is frozen.
+const nextTick = () =>
+  new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+    setTimeout(finish, 60);
+  });
+
+// anime.js runs on requestAnimationFrame, which the browser freezes entirely
+// while the tab is hidden — so an animation's `.finished` can hang for as
+// long as the player is looking at another tab, which would leave the board
+// stuck mid-move. Race every wait against a timeout (setTimeout keeps firing
+// when hidden, unlike rAF) that snaps the animations straight to their end,
+// so a backgrounded move still finishes and the board is never left locked.
+function raceFinish(instances, timeoutMs) {
+  let timer;
+  const done = Promise.all(instances.map((a) => a.finished));
+  const bail = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      instances.forEach((a) => {
+        a.seek(a.duration);
+        a.pause(); // drop it from anime.js' active list; the engine is frozen
+      });
+      resolve();
+    }, timeoutMs);
+  });
+  return Promise.race([done, bail]).finally(() => clearTimeout(timer));
 }
 
 function buildBoardDOM() {
   boardEl.innerHTML = "";
-  cellEls = [];
+  tileEls = [];
   labelEls = [];
+  allTileEls = [];
   for (let r = 0; r < SIZE; r++) {
-    cellEls.push([]);
+    tileEls.push([]);
     labelEls.push([]);
     for (let c = 0; c < SIZE; c++) {
-      const cellWrap = document.createElement("div");
-      cellWrap.className = "tile-cell";
+      const cell = document.createElement("div");
+      cell.className = "tile-cell";
       const tile = document.createElement("div");
       tile.className = "tile empty";
+      tile.id = `cell-${r}-${c}`;
       const label = document.createElement("span");
       label.className = "tile-label";
       tile.appendChild(label);
-      cellWrap.appendChild(tile);
-      boardEl.appendChild(cellWrap);
-      cellEls[r].push(tile);
+      cell.appendChild(tile);
+      boardEl.appendChild(cell);
+      tileEls[r].push(tile);
       labelEls[r].push(label);
+      allTileEls.push(tile);
     }
   }
 }
 
 function paintCell(r, c, value) {
-  const tile = cellEls[r][c];
+  const tile = tileEls[r][c];
   const label = labelEls[r][c];
   if (value === 0) {
     tile.classList.add("empty");
-    label.textContent = "";
     tile.style.background = "";
+    label.textContent = "";
   } else {
     tile.classList.remove("empty");
     tile.style.background = COLORS[value] || "#0f172a";
@@ -341,16 +327,23 @@ function paintCell(r, c, value) {
 }
 
 function paintBoard(b) {
-  for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) paintCell(r, c, b[r][c]);
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++) paintCell(r, c, b[r][c]);
 }
 
 function updateStatus() {
-  if (moves > 0) {
-    statusEl.textContent = `${moves} move${moves > 1 ? "s" : ""}`;
-  } else {
-    statusEl.textContent = "Try to merge all the tiles into one by only rotating the board.";
-  }
+  statusEl.textContent =
+    moves > 0
+      ? `${moves} move${moves > 1 ? "s" : ""}`
+      : "Try to merge all the tiles into one by only rotating the board.";
   resetBtn.classList.toggle("hidden", moves === 0);
+}
+
+// Mirrors the original's `:class="isAnimating ? 'opacity-10' : ''"` on the
+// controls row, and blocks clicks while a move is playing.
+function setAnimating(value) {
+  animating = value;
+  controlsEl.classList.toggle("dimmed", value);
 }
 
 function newGame() {
@@ -360,7 +353,7 @@ function newGame() {
   solutionLength = gen.solutionLength;
   moves = 0;
   won = false;
-  animating = false;
+  setAnimating(false);
   winOverlay.classList.add("hidden");
   rotateLeftBtn.classList.remove("hidden");
   rotateRightBtn.classList.remove("hidden");
@@ -370,191 +363,119 @@ function newGame() {
   genNote.textContent = `Solvable in ${solutionLength} move${solutionLength === 1 ? "" : "s"}.`;
 }
 
-// Rotates the whole board container — tile squares and all — while every
-// tile's number counter-rotates so it stays upright throughout the spin.
-// Confirmed against a recording of the original: the colored tile squares
-// visibly turn into diamonds mid-spin along with the board, and only the
-// digits stay horizontal, so the counter-rotation belongs on the text
-// label alone, not the tile (which would keep the whole square upright
-// and just swing its position instead of visibly rotating).
-//
-// Only the board's own rotation is awaited. The counter-spin starts 100ms
-// later, so it's still ~80% through when the board's tween ends — waiting
-// for it too would leave the board sitting flat with the pre-move values
-// for that last stretch (its transform has already snapped back to 0deg
-// the instant its own animation finishes), which reads as the grid
-// flashing back to the wrong layout right before paintBoard corrects it.
-// Returning as soon as the board itself is done lets the data swap happen
-// at that exact moment, so the trailing counter-spin settles over the
-// already-correct values instead of stale ones.
-// Returns { boardDone, allDone }: boardDone resolves as soon as the board's
-// own rotation ends (used to swap data early, see doMove), allDone resolves
-// once the trailing counter-spin has also finished. The caller must await
-// allDone before letting another move start any new rotate animation on
-// these same label elements — starting one while the previous counter-spin
-// is still running would hard-reset it to its 0% keyframe (rotate(0deg))
-// instantly, which reads as the number glitching to a different angle.
-function animateRotate(dir) {
-  const deg = dir === "left" ? -90 : 90;
-  const boardAnim = boardEl.animate(
-    [{ transform: "rotate(0deg)" }, { transform: `rotate(${deg}deg)` }],
-    { duration: 500, easing: EASE }
-  );
-  const labelFinished = [];
-  for (let r = 0; r < SIZE; r++) {
-    for (let c = 0; c < SIZE; c++) {
-      labelFinished.push(
-        labelEls[r][c].animate(
-          [{ transform: "rotate(0deg)" }, { transform: `rotate(${-deg}deg)` }],
-          { duration: 500, delay: 100, easing: EASE }
-        ).finished
-      );
-    }
-  }
-  return {
-    boardDone: boardAnim.finished,
-    allDone: Promise.all([boardAnim.finished, ...labelFinished]),
-  };
-}
+// Rotate the whole board 90° left or right, then let tiles fall & merge
+// (like gravity) until the board is stable. Ported from HomeView.vue.
+async function rotate(direction) {
+  if (!board || animating || won) return;
+  setAnimating(true);
 
-// Tiles are stacked in DOM/paint order by (r, c), so a tile sliding
-// downward or pulsing visually enters neighboring cells' space and would
-// paint underneath them without this. Bump z-index for the duration of the
-// animation so it stays on top while crossing that space, then clear it
-// (and any transform-origin override) once the animation settles.
-function clearEventStyles(events) {
-  for (const ev of events) {
-    cellEls[ev.r][ev.c].style.zIndex = "";
-    cellEls[ev.r][ev.c].style.transformOrigin = "";
-  }
-}
+  const angle = direction === "left" ? -90 : 90;
 
-// A tile that lands on the board's floor (nothing below it, so this is its
-// final row) overshoots past that resting position by ~20% of a cell
-// before springing back. One that lands on top of another tile stops
-// there directly -- there's no floor to bounce off of. The drop and the
-// bounce-settle are two separate animations chained one after the other
-// (rather than one compressed timeline) so the bounce can run slower
-// without dragging out the drop itself.
-function animateFallEvents(events) {
-  return Promise.all(
-    events.map((ev) => {
-      const el = cellEls[ev.r][ev.c];
-      el.style.zIndex = "2";
-      const px = ev.rows * STEP;
-      const landedOnFloor = ev.r + ev.rows === SIZE - 1;
-      const drop = el.animate(
-        [{ transform: "translateY(0px)" }, { transform: `translateY(${px}px)` }],
-        { duration: 130, easing: "ease-in" }
-      ).finished;
-      if (!landedOnFloor) return drop;
-      return drop.then(
-        () =>
-          el.animate(
-            [
-              { transform: `translateY(${px}px)` },
-              { transform: `translateY(${px + CELL * 0.2}px)` },
-              { transform: `translateY(${px}px)` },
-            ],
-            { duration: 220, easing: "ease-in-out" }
-          ).finished
-      );
-    })
-  );
-}
+  // Purely visual: spin the board container one way and each tile the
+  // opposite way (so the tiles and their numbers stay upright while the
+  // board turns). Only the board's rotation sets the timeline duration;
+  // the counter-spin starts 100ms in (offset "-=400" against 500ms).
+  const timeline = anime.timeline({ easing: "easeOutExpo", duration: 500 });
+  timeline.add({ targets: boardEl, rotate: angle });
+  timeline.add({ targets: allTileEls, rotate: -angle }, "-=400");
+  await raceFinish([timeline], 1200);
 
-// Animates a batch of merges. By this point closeGaps has already made
-// every pair directly adjacent, so a merge event's two tiles are already
-// touching: the landing tile pulses and takes on the doubled value, while
-// the tile it consumed (one row above it) shrinks and fades out instead of
-// just vanishing when the board repaints.
-function animateMergeEvents(events) {
-  return Promise.all(
-    events.flatMap((ev) => {
-      const target = cellEls[ev.r][ev.c];
-      const source = cellEls[ev.r - 1][ev.c];
-      target.style.zIndex = "2";
-      board[ev.r][ev.c] = ev.value;
-      paintCell(ev.r, ev.c, ev.value);
-      target.style.transformOrigin = "center";
-      const targetAnim = target.animate(
-        [
-          { transform: "scale(1, 1)" },
-          { transform: "scale(1.15, 1.6)" },
-          { transform: "scale(1, 1)" },
-        ],
-        { duration: 80, easing: "ease-in-out" }
-      ).finished;
-      const sourceAnim = source.animate(
-        [
-          { transform: "scale(1)", opacity: 1 },
-          { transform: "scale(0.4)", opacity: 0 },
-        ],
-        { duration: 80, easing: "ease-in" }
-      ).finished;
-      return [targetAnim, sourceAnim];
-    })
-  );
-}
-
-// Drives the animated fall/merge as two genuinely separate, sequential
-// steps -- drop, then combine -- with a pause after each, rather than one
-// pass animated all at once (which let a combine visually start before its
-// drop, bounce included, had actually finished). closeGaps and
-// combineAdjacent (not gravityMergePass) drive the steps themselves, but
-// implement the exact same rule -- see the comment above closeGaps -- so
-// the board the player reaches still always matches what the solver proved
-// solvable.
-//
-// Merging always frees up space above it, so a combine is typically
-// followed by another drop, which can expose another combine, and so on;
-// looping drop-then-combine until neither produces anything is how a chain
-// reaction plays out, each step of it separated by a pause.
-async function gravityAndMergeAnimated() {
-  while (true) {
-    const { board: dropped, events: fallEvents } = closeGaps(board);
-    if (fallEvents.length > 0) {
-      await animateFallEvents(fallEvents);
-      clearEventStyles(fallEvents);
-      board = dropped;
-      paintBoard(board);
-      await nextFrame();
-      await delay(STEP_PAUSE);
-    }
-
-    const { board: merged, events: mergeEvents } = combineAdjacent(board);
-    if (mergeEvents.length === 0) return; // fully settled: no gaps, nothing left to merge
-
-    await animateMergeEvents(mergeEvents);
-    clearEventStyles(mergeEvents);
-    board = merged;
-    paintBoard(board);
-    await nextFrame();
-    await delay(STEP_PAUSE);
-  }
-}
-
-async function doMove(dir) {
-  if (animating || won || !board) return;
-  animating = true;
-
-  const rotateAnim = animateRotate(dir);
-  await rotateAnim.boardDone;
-  board = dir === "left" ? rotateCCW(board) : rotateCW(board);
+  // Actually rotate the underlying 4x4 data, then snap the spin back to 0
+  // so the (now-rotated) board renders flat.
+  board = direction === "left" ? rotateCCW(board) : rotateCW(board);
+  timeline.seek(0);
   paintBoard(board);
-  await nextFrame();
+  await nextTick();
 
-  // The original holds still for a beat after the rotation settles before
-  // gravity kicks in -- measured at ~400ms in a recording -- rather than
-  // flowing straight from rotate into drop. The drop itself is quick once
-  // it starts; the pause is what gives it that "settle, then snap" feel.
-  await delay(ROTATE_TO_DROP_PAUSE);
+  // Settle pass: each iteration drops every tile that can fall one row and
+  // merges every tile resting on an equal one, animating them together,
+  // then repaints — repeating until a pass produces no movement. `next` is
+  // the board after this pass; `targetRow` is the row a tile falls FROM.
+  let unstable = true;
+  while (unstable) {
+    const animations = [];
+    const lifted = []; // tiles whose z-index we raised for this pass
+    const next = cloneBoard(board);
 
-  await gravityAndMergeAnimated();
-  // Gravity may finish almost instantly (board already settled), so make
-  // sure the trailing label counter-spin is done too before releasing the
-  // lock — otherwise a fast next move could interrupt it mid-spin.
-  await rotateAnim.allDone;
+    // A tile animating `translateY`/`scale` gets its own stacking context and,
+    // at the default z-index, is painted under the later grid cells it moves
+    // across — so it vanishes behind the board until it lands. Raising its
+    // z-index for the duration of the pass keeps it on top the whole way down.
+    const lift = (r, c) => {
+      const el = tileEls[r][c];
+      el.style.zIndex = "2";
+      lifted.push(el);
+    };
+
+    for (let rowsFromTop = 1; rowsFromTop < SIZE; rowsFromTop++) {
+      const targetRow = SIZE - rowsFromTop - 1;
+
+      for (let col = 0; col < SIZE; col++) {
+        let fallDistance = 0;
+
+        // Slide the tile at `targetRow` down one step into the empty run
+        // that starts just below it.
+        for (
+          let row = SIZE - rowsFromTop;
+          row < SIZE && next[row][col] === 0;
+          row++
+        ) {
+          if (next[row - 1][col] !== 0) {
+            next[row][col] = next[row - 1][col];
+            next[row - 1][col] = 0;
+            fallDistance += STEP;
+          }
+        }
+
+        // If the tile at `targetRow` is now resting directly on an equal
+        // tile, merge the two — the survivor (below) doubles and pulses.
+        const landedRow = SIZE - rowsFromTop;
+        if (
+          next[landedRow][col] !== 0 &&
+          next[targetRow][col] === next[landedRow][col]
+        ) {
+          next[landedRow][col] *= 2;
+          next[targetRow][col] = 0;
+          fallDistance += STEP;
+          // Show the doubled value now, so the pulse plays on the new number.
+          paintCell(landedRow, col, next[landedRow][col]);
+          lift(landedRow, col);
+          animations.push(
+            anime({
+              targets: `#cell-${landedRow}-${col}`,
+              scale: 1.25,
+              duration: 200,
+              direction: "alternate",
+              easing: "easeInOutSine",
+            })
+          );
+        }
+
+        if (fallDistance > 0) {
+          lift(targetRow, col);
+          animations.push(
+            anime({
+              targets: `#cell-${targetRow}-${col}`,
+              translateY: fallDistance,
+              duration: 500,
+            })
+          );
+        }
+      }
+    }
+
+    if (animations.length === 0) {
+      unstable = false;
+      break;
+    }
+
+    await raceFinish(animations, 1200);
+    board = next;
+    animations.forEach((a) => a.seek(0)); // clear the transforms for the repaint
+    lifted.forEach((el) => (el.style.zIndex = ""));
+    paintBoard(board);
+    await nextTick();
+  }
 
   moves += 1;
   updateStatus();
@@ -566,46 +487,47 @@ async function doMove(dir) {
     winOverlay.classList.remove("hidden");
   }
 
-  animating = false;
+  setAnimating(false);
 }
 
-// A translateX wiggle on the board, matching the original's reset shake —
-// the data resets instantly underneath it, the shake is just a flourish.
-async function resetGame() {
-  if (animating || moves === 0) return;
-  animating = true;
+// Shake the board and restore the original grid. Ported from HomeView.vue —
+// the data resets instantly underneath; the shake is just a flourish.
+async function reset() {
+  if (!board || animating || moves === 0) return;
+  setAnimating(true);
+  moves = 0;
   won = false;
   winOverlay.classList.add("hidden");
 
-  board = cloneBoard(initialBoard);
-  moves = 0;
-  updateStatus();
-  paintBoard(board);
-
-  const shake = boardEl.animate(
-    [
-      { transform: "translateX(0px)" },
-      { transform: "translateX(-25px)" },
-      { transform: "translateX(25px)" },
-      { transform: "translateX(-12.5px)" },
-      { transform: "translateX(12.5px)" },
-      { transform: "translateX(0px)" },
+  const shake = anime({
+    targets: boardEl,
+    translateX: [
+      { value: -25 },
+      { value: 25 },
+      { value: -12.5 },
+      { value: 12.5 },
+      { value: 0 },
     ],
-    { duration: 350, easing: EASE }
-  );
-  await shake.finished;
-  animating = false;
+    duration: 350,
+    easing: "easeOutExpo",
+  });
+  board = cloneBoard(initialBoard);
+  paintBoard(board);
+  updateStatus();
+  await raceFinish([shake], 900);
+  shake.seek(0);
+  setAnimating(false);
 }
 
-rotateLeftBtn.addEventListener("click", () => doMove("left"));
-rotateRightBtn.addEventListener("click", () => doMove("right"));
-resetBtn.addEventListener("click", resetGame);
-playAgainBtn.addEventListener("click", resetGame);
+rotateLeftBtn.addEventListener("click", () => rotate("left"));
+rotateRightBtn.addEventListener("click", () => rotate("right"));
+resetBtn.addEventListener("click", reset);
+playAgainBtn.addEventListener("click", reset);
 
 window.addEventListener("keydown", (e) => {
-  if (e.key === "ArrowLeft") doMove("left");
-  else if (e.key === "ArrowRight") doMove("right");
-  else if (e.key === "Enter") resetGame();
+  if (e.key === "ArrowLeft") rotate("left");
+  else if (e.key === "ArrowRight") rotate("right");
+  else if (e.key === "Enter") reset();
 });
 
 newGame();

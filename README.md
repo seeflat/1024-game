@@ -1,7 +1,10 @@
 # 1024 — rotate & merge puzzle
 
 A small clone of the "Power / 1024" rotate-and-merge puzzle
-(https://1024-game.netlify.app), rebuilt as a static, dependency-free page.
+(https://1024-game.netlify.app), rebuilt as a static page with no backend.
+The only runtime dependency is [anime.js](https://animejs.com) (v3, vendored
+in `anime.min.js`), used for the rotate/settle animation — the same library
+the original used.
 
 **Live:** https://seeflat.github.io/1024-game/ (deployed automatically from
 `main` via GitHub Actions — see `.github/workflows/deploy.yml`)
@@ -32,7 +35,9 @@ backend, nothing to go down:
 
 - `game.js` implements the board rotation (90° CW/CCW) and gravity-merge
   physics (tiles fall and merge like a single-direction 2048 move) that
-  drive the puzzle.
+  drive the puzzle. The rotate/settle animation is a port of the original
+  Vue `HomeView.vue` component's `setup()` logic to a persistent 16-cell
+  DOM.
 - `generatePuzzle()` builds a random board whose tile values are a random
   power-of-two partition of a target value (64 up to 1024), then verifies it
   with a breadth-first search over the two possible moves (rotate
