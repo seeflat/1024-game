@@ -159,51 +159,116 @@ function shuffledCells() {
   return cells;
 }
 
-// Splits `target` (a power of two) into a random multiset of power-of-two
-// parts that sum back to it (merges preserve the total, so this is exactly
-// what's needed for a puzzle that CAN collapse to one tile of value target).
-function randomPartition(target, desiredCount) {
-  let parts = [target];
-  let guard = 0;
-  while (parts.length < desiredCount && guard < 200) {
-    guard++;
-    const splittable = parts.map((v, i) => (v > 2 ? i : -1)).filter((i) => i !== -1);
+// Splits `target` (a power of two) into `count` power-of-two parts that sum
+// back to it (merges preserve the total, so this is exactly what's needed
+// for a puzzle that CAN collapse to one tile of value `target`).
+//
+// Each step halves one existing part, chosen with probability proportional
+// to its value — so the biggest parts break down first. That keeps the
+// opening board from ever having one lone giant tile, while still leaving
+// enough spread that boards aren't a monotonous wall of one value. Stops
+// early only if every part is already a 2 (nothing left to split).
+function partitionValue(target, count) {
+  const parts = [target];
+  while (parts.length < count) {
+    const splittable = parts
+      .map((value, index) => ({ value, index }))
+      .filter((p) => p.value > 2);
     if (splittable.length === 0) break;
-    const idx = splittable[Math.floor(Math.random() * splittable.length)];
-    const v = parts[idx];
-    parts.splice(idx, 1, v / 2, v / 2);
+
+    const totalWeight = splittable.reduce((sum, p) => sum + p.value, 0);
+    let r = Math.random() * totalWeight;
+    let pick = splittable[splittable.length - 1];
+    for (const p of splittable) {
+      r -= p.value;
+      if (r <= 0) {
+        pick = p;
+        break;
+      }
+    }
+    parts.splice(pick.index, 1, pick.value / 2, pick.value / 2);
   }
   return parts;
 }
 
-const TARGET_POOL = [64, 128, 128, 256, 256, 256, 512, 512, 1024];
+// Puzzle shape. A board must be able to collapse to a single tile, so its
+// values are always a power-of-two partition of `target` (the winning tile).
+const TARGET_POOL = [64, 128, 128, 256, 256, 512];
+const MIN_TILES = 6;
+const MAX_TILES = 10;
+const MIN_START_TILE = 16; // the board must hold at least one tile this big…
+const MAX_START_TILE = 64; // …and none bigger — keeps the opening interesting
+const MIN_SOLUTION = 5; // optimal-move count must land in this range: not a
+const MAX_SOLUTION = 10; // giveaway, not a marathon
+const SEARCH_DEPTH = MAX_SOLUTION + 2; // BFS ceiling when checking solvability
+
+// Builds one random candidate board (no solvability check yet).
+function buildCandidate() {
+  const target = TARGET_POOL[Math.floor(Math.random() * TARGET_POOL.length)];
+  const count = MIN_TILES + Math.floor(Math.random() * (MAX_TILES - MIN_TILES + 1));
+  const parts = partitionValue(target, count);
+  if (parts.length > SIZE * SIZE) return null;
+
+  const board = emptyBoard();
+  const cells = shuffledCells();
+  parts.forEach((value, k) => {
+    const [r, c] = cells[k];
+    board[r][c] = value;
+  });
+  return { board, target, maxTile: Math.max(...parts) };
+}
 
 function generatePuzzle() {
-  for (let attempt = 0; attempt < 400; attempt++) {
-    const target = TARGET_POOL[Math.floor(Math.random() * TARGET_POOL.length)];
-    const desiredCount = 5 + Math.floor(Math.random() * 4); // 5..8 tiles
-    const parts = randomPartition(target, desiredCount);
-    if (parts.length > SIZE * SIZE) continue;
+  // Full constraints: a bounded opening tile, a fairly full board, and a
+  // solution that's neither trivial nor a slog. Succeeds ~100% of the time
+  // well within this budget.
+  for (let attempt = 0; attempt < 800; attempt++) {
+    const candidate = buildCandidate();
+    if (
+      !candidate ||
+      candidate.maxTile < MIN_START_TILE ||
+      candidate.maxTile > MAX_START_TILE
+    )
+      continue;
 
-    const board = emptyBoard();
-    const cells = shuffledCells();
-    for (let k = 0; k < parts.length; k++) {
-      const [r, c] = cells[k];
-      board[r][c] = parts[k];
-    }
+    const solution = findSolution(candidate.board, SEARCH_DEPTH);
+    if (
+      !solution ||
+      solution.length < MIN_SOLUTION ||
+      solution.length > MAX_SOLUTION
+    )
+      continue;
 
-    const solution = findSolution(board, 14);
-    if (solution) return { board, target, solutionLength: solution.length };
+    return {
+      board: candidate.board,
+      target: candidate.target,
+      solutionLength: solution.length,
+    };
   }
 
-  // Guaranteed fallback: two tiles stacked in one column always solve in a
-  // single move. This makes it impossible for puzzle generation to ever
-  // fail to produce a playable board — the original site's failure mode.
+  // Relaxed pass: any solvable board whose opening tile isn't oversized.
+  // Not expected to be reached in practice — it's here so a freak RNG streak
+  // still yields a real puzzle rather than the trivial fallback below.
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const candidate = buildCandidate();
+    if (!candidate || candidate.maxTile > MAX_START_TILE) continue;
+    const solution = findSolution(candidate.board, 14);
+    if (solution)
+      return {
+        board: candidate.board,
+        target: candidate.target,
+        solutionLength: solution.length,
+      };
+  }
+
+  // Guaranteed fallback: two equal tiles stacked in a column always solve in
+  // a single move. This makes it impossible for generation to ever fail to
+  // produce a playable board — the original site's failure mode.
   const board = emptyBoard();
-  board[2][0] = 512;
-  board[3][0] = 512;
+  board[2][0] = 32;
+  board[3][0] = 32;
   const solution = findSolution(board, 4);
-  return { board, target: 1024, solutionLength: solution ? solution.length : 1 };
+  return { board, target: 64, solutionLength: solution ? solution.length : 1 };
 }
 
 // ---- UI wiring ----

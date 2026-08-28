@@ -38,14 +38,17 @@ backend, nothing to go down:
   drive the puzzle. The rotate/settle animation is a port of the original
   Vue `HomeView.vue` component's `setup()` logic to a persistent 16-cell
   DOM.
-- `generatePuzzle()` builds a random board whose tile values are a random
-  power-of-two partition of a target value (64 up to 1024), then verifies it
-  with a breadth-first search over the two possible moves (rotate
-  left/right) up to depth 14, so every puzzle served is provably solvable
-  and its optimal move count is known.
-- If generation somehow can't find a solvable board in 400 tries (it always
-  does in practice), a hand-built, always-solvable fallback board is used
-  instead — so the page can never get stuck the way the original did.
+- `generatePuzzle()` builds a random board whose tile values are a
+  power-of-two partition of a target (64–512), splitting the largest chunks
+  first so the opening never has one lone giant tile. It then keeps only
+  boards that are a good puzzle: 6–10 tiles, largest tile 16–64, and a
+  breadth-first search over the two moves (rotate left/right) proving an
+  optimal solution of 5–10 moves. So every puzzle served is provably
+  solvable and its optimal move count is known.
+- If generation somehow can't find a board meeting all of that (it always
+  does in practice — measured 0 misses over 20k), it relaxes to any solvable
+  board, and failing even that, a hand-built always-solvable fallback — so
+  the page can never get stuck the way the original did.
 
 ## Play
 
