@@ -97,6 +97,66 @@ function gravityMergeFull(board) {
   }
 }
 
+// ---- Animation-only physics ----
+//
+// gravityMergePass (above) is the solver's ground truth: it bundles a
+// gap-close and a merge-check into one pass, which is exactly right for
+// proving a puzzle solvable. But it's the wrong shape for the animated
+// renderer, which needs "everything drops" and "everything combines" as
+// two genuinely separate, sequential steps rather than one pass animated
+// all at once. closeGaps and combineAdjacent below split that same rule
+// into those two steps. Repeatedly alternating them (drop, combine, drop,
+// combine, ...) until neither produces an event converges to the exact
+// same final board as gravityMergeFull -- both are just "gravity, then
+// merge equal neighbors, repeat" -- so the animated board still always
+// matches what the solver proved solvable. Only the renderer uses these;
+// the solver keeps using gravityMergePass/gravityMergeFull untouched.
+
+// Pushes every column's tiles down as far as they can go, closing empty
+// gaps. No merge check at all -- that's combineAdjacent's job below.
+function closeGaps(board) {
+  const q = cloneBoard(board);
+  const events = [];
+  for (let c = 0; c < SIZE; c++) {
+    const values = [];
+    for (let r = 0; r < SIZE; r++) if (board[r][c] !== 0) values.push({ r, v: board[r][c] });
+    const startRow = SIZE - values.length;
+    for (let i = 0; i < values.length; i++) {
+      const { r, v } = values[i];
+      const dest = startRow + i;
+      q[dest][c] = v;
+      if (dest !== r) events.push({ kind: "fall", r, c, rows: dest - r });
+    }
+    for (let r = 0; r < startRow; r++) q[r][c] = 0;
+  }
+  return { board: q, events };
+}
+
+// Given a board whose columns are already gap-free (i.e. just run through
+// closeGaps), checks bottom-up for directly-touching equal pairs and
+// merges the bottom-most one in each column. Only one merge per column per
+// call, matching gravityMergePass: it never resolves more than the
+// bottom-most pair in a single pass either, since consuming that pair
+// shifts everything above it before any higher pair gets a chance to be
+// checked. A column with more than one eligible pair (e.g. a separate
+// equal pair further up) gets the rest on a later call, once the closeGaps
+// in between has re-closed the gap the first merge left behind.
+function combineAdjacent(board) {
+  const q = cloneBoard(board);
+  const events = [];
+  for (let c = 0; c < SIZE; c++) {
+    for (let r = SIZE - 1; r > 0; r--) {
+      if (q[r][c] !== 0 && q[r][c] === q[r - 1][c]) {
+        q[r][c] *= 2;
+        q[r - 1][c] = 0;
+        events.push({ kind: "merge", r, c, value: q[r][c] });
+        break;
+      }
+    }
+  }
+  return { board: q, events };
+}
+
 function applyMove(board, dir) {
   const rotated = dir === "left" ? rotateCCW(board) : rotateCW(board);
   return gravityMergeFull(rotated);
@@ -212,6 +272,9 @@ const STEP = CELL + GAP; // px moved per row of fall
 
 const EASE = "cubic-bezier(0.16, 1, 0.3, 1)"; // ~easeOutExpo
 
+const ROTATE_TO_DROP_PAUSE = 400; // ms of stillness after rotation settles, before gravity starts
+const STEP_PAUSE = 150; // ms of stillness between each drop/combine step
+
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
 let labelEls = null; // [r][c] -> .tile-label element, the part that counter-rotates
@@ -234,6 +297,10 @@ let cellEls = null; // [r][c] -> .tile element, created once and reused
 
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildBoardDOM() {
@@ -350,62 +417,120 @@ function animateRotate(dir) {
   };
 }
 
-// Drives the animated fall/merge from gravityMergePass — the exact same
-// function the solver uses — so the board the player actually reaches is
-// guaranteed to match what was proven solvable. Passes repeat until
-// nothing moves, which produces the cascading, staged falls (rather than
-// tiles teleporting straight to their final resting row) and lets chain
-// merges play out visually across passes, one merge-pulse/fall-slide at a
-// time.
-async function gravityAndMergeAnimated() {
-  while (true) {
-    const { board: next, events } = gravityMergePass(board);
-    if (events.length === 0) return;
+// Tiles are stacked in DOM/paint order by (r, c), so a tile sliding
+// downward or pulsing visually enters neighboring cells' space and would
+// paint underneath them without this. Bump z-index for the duration of the
+// animation so it stays on top while crossing that space, then clear it
+// (and any transform-origin override) once the animation settles.
+function clearEventStyles(events) {
+  for (const ev of events) {
+    cellEls[ev.r][ev.c].style.zIndex = "";
+    cellEls[ev.r][ev.c].style.transformOrigin = "";
+  }
+}
 
-    // Tiles are stacked in DOM/paint order by (r, c), so a tile sliding
-    // downward via translateY visually enters later cells' space and would
-    // paint underneath them. Bump z-index for the duration of the animation
-    // so falling/merging tiles stay on top while they cross that space.
-    // Both fall and merge land with a squash-and-stretch overshoot rather
-    // than stopping rigidly: a fall stretches taller (from its top edge,
-    // since it's still moving downward when it overshoots) and a merge
-    // pulses from its center, both settling back to scale(1) at the end.
-    const anims = events.map((ev) => {
+// A tile that lands on the board's floor (nothing below it, so this is its
+// final row) overshoots past that resting position by ~20% of a cell
+// before springing back. One that lands on top of another tile stops
+// there directly -- there's no floor to bounce off of. The drop and the
+// bounce-settle are two separate animations chained one after the other
+// (rather than one compressed timeline) so the bounce can run slower
+// without dragging out the drop itself.
+function animateFallEvents(events) {
+  return Promise.all(
+    events.map((ev) => {
       const el = cellEls[ev.r][ev.c];
       el.style.zIndex = "2";
-      if (ev.kind === "merge") {
-        board[ev.r][ev.c] = ev.value;
-        paintCell(ev.r, ev.c, ev.value);
-        el.style.transformOrigin = "center";
-        return el.animate(
-          [
-            { transform: "scale(1, 1)" },
-            { transform: "scale(1.15, 1.6)" },
-            { transform: "scale(1, 1)" },
-          ],
-          { duration: 250, easing: "ease-in-out" }
-        ).finished;
-      }
       const px = ev.rows * STEP;
-      el.style.transformOrigin = "top";
-      return el.animate(
-        [
-          { transform: "translateY(0px) scaleY(1)" },
-          { transform: `translateY(${px * 0.85}px) scaleY(1.25)`, offset: 0.85 },
-          { transform: `translateY(${px}px) scaleY(1)` },
-        ],
-        { duration: 500, easing: "ease-in" }
+      const landedOnFloor = ev.r + ev.rows === SIZE - 1;
+      const drop = el.animate(
+        [{ transform: "translateY(0px)" }, { transform: `translateY(${px}px)` }],
+        { duration: 130, easing: "ease-in" }
       ).finished;
-    });
+      if (!landedOnFloor) return drop;
+      return drop.then(
+        () =>
+          el.animate(
+            [
+              { transform: `translateY(${px}px)` },
+              { transform: `translateY(${px + CELL * 0.2}px)` },
+              { transform: `translateY(${px}px)` },
+            ],
+            { duration: 220, easing: "ease-in-out" }
+          ).finished
+      );
+    })
+  );
+}
 
-    await Promise.all(anims);
-    for (const ev of events) {
-      cellEls[ev.r][ev.c].style.zIndex = "";
-      cellEls[ev.r][ev.c].style.transformOrigin = "";
+// Animates a batch of merges. By this point closeGaps has already made
+// every pair directly adjacent, so a merge event's two tiles are already
+// touching: the landing tile pulses and takes on the doubled value, while
+// the tile it consumed (one row above it) shrinks and fades out instead of
+// just vanishing when the board repaints.
+function animateMergeEvents(events) {
+  return Promise.all(
+    events.flatMap((ev) => {
+      const target = cellEls[ev.r][ev.c];
+      const source = cellEls[ev.r - 1][ev.c];
+      target.style.zIndex = "2";
+      board[ev.r][ev.c] = ev.value;
+      paintCell(ev.r, ev.c, ev.value);
+      target.style.transformOrigin = "center";
+      const targetAnim = target.animate(
+        [
+          { transform: "scale(1, 1)" },
+          { transform: "scale(1.15, 1.6)" },
+          { transform: "scale(1, 1)" },
+        ],
+        { duration: 80, easing: "ease-in-out" }
+      ).finished;
+      const sourceAnim = source.animate(
+        [
+          { transform: "scale(1)", opacity: 1 },
+          { transform: "scale(0.4)", opacity: 0 },
+        ],
+        { duration: 80, easing: "ease-in" }
+      ).finished;
+      return [targetAnim, sourceAnim];
+    })
+  );
+}
+
+// Drives the animated fall/merge as two genuinely separate, sequential
+// steps -- drop, then combine -- with a pause after each, rather than one
+// pass animated all at once (which let a combine visually start before its
+// drop, bounce included, had actually finished). closeGaps and
+// combineAdjacent (not gravityMergePass) drive the steps themselves, but
+// implement the exact same rule -- see the comment above closeGaps -- so
+// the board the player reaches still always matches what the solver proved
+// solvable.
+//
+// Merging always frees up space above it, so a combine is typically
+// followed by another drop, which can expose another combine, and so on;
+// looping drop-then-combine until neither produces anything is how a chain
+// reaction plays out, each step of it separated by a pause.
+async function gravityAndMergeAnimated() {
+  while (true) {
+    const { board: dropped, events: fallEvents } = closeGaps(board);
+    if (fallEvents.length > 0) {
+      await animateFallEvents(fallEvents);
+      clearEventStyles(fallEvents);
+      board = dropped;
+      paintBoard(board);
+      await nextFrame();
+      await delay(STEP_PAUSE);
     }
-    board = next;
+
+    const { board: merged, events: mergeEvents } = combineAdjacent(board);
+    if (mergeEvents.length === 0) return; // fully settled: no gaps, nothing left to merge
+
+    await animateMergeEvents(mergeEvents);
+    clearEventStyles(mergeEvents);
+    board = merged;
     paintBoard(board);
     await nextFrame();
+    await delay(STEP_PAUSE);
   }
 }
 
@@ -418,6 +543,12 @@ async function doMove(dir) {
   board = dir === "left" ? rotateCCW(board) : rotateCW(board);
   paintBoard(board);
   await nextFrame();
+
+  // The original holds still for a beat after the rotation settles before
+  // gravity kicks in -- measured at ~400ms in a recording -- rather than
+  // flowing straight from rotate into drop. The drop itself is quick once
+  // it starts; the pause is what gives it that "settle, then snap" feel.
+  await delay(ROTATE_TO_DROP_PAUSE);
 
   await gravityAndMergeAnimated();
   // Gravity may finish almost instantly (board already settled), so make
