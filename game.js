@@ -556,19 +556,36 @@ function formatDateNote(key) {
   return `Daily puzzles · ${formatted}`;
 }
 
+// Puzzles unlock in order: slot 0 is always playable, and slot N only once
+// every slot before it is solved — so puzzle 2 stays locked until puzzle 1
+// is solved, and puzzle 3 until both 1 and 2 are.
+function isSlotUnlocked(slot) {
+  for (let i = 0; i < slot; i++) {
+    if (!dailyRecord[i]) return false;
+  }
+  return true;
+}
+
 // Reflects `dailyRecord`/`activeSlot` onto the 3 slot buttons: which one is
-// selected, and which are already solved (✓).
+// selected, which are already solved (✓), and which are still locked (🔒).
 function renderSlotTabs() {
   slotTabEls.forEach((btn) => {
     const slot = Number(btn.dataset.slot);
     const solved = !!dailyRecord[slot];
+    const unlocked = isSlotUnlocked(slot);
     btn.classList.toggle("active", slot === activeSlot);
     btn.classList.toggle("solved", solved);
-    btn.textContent = solved ? "✓" : String(slot + 1);
+    btn.classList.toggle("locked", !unlocked);
+    btn.disabled = !unlocked;
+    btn.title = unlocked
+      ? `Daily puzzle ${slot + 1}`
+      : `Solve puzzle${slot > 1 ? "s" : ""} ${Array.from({ length: slot }, (_, i) => i + 1).join(" and ")} first`;
+    btn.textContent = solved ? "✓" : unlocked ? String(slot + 1) : "🔒";
   });
 }
 
-// The first still-unsolved slot today, or null if all 3 are done.
+// The first still-unsolved (and therefore unlocked) slot today, or null if
+// all 3 are done.
 function nextUnsolvedSlot() {
   for (let slot = 0; slot < DAILY_SLOTS; slot++) {
     if (!dailyRecord[slot]) return slot;
@@ -596,6 +613,7 @@ function configureWinOverlayActions() {
 // instead of playable — the original site's "Play again" is gone in daily
 // mode: once a slot is solved, replaying it wouldn't change anything real.
 function loadSlot(slot) {
+  if (!isSlotUnlocked(slot)) return; // belt-and-braces; callers already check this
   activeSlot = slot;
   const gen = generateDailyPuzzle(dateKey, slot);
   initialBoard = cloneBoard(gen.board);
@@ -802,7 +820,9 @@ resetBtn.addEventListener("click", reset);
 slotTabEls.forEach((btn) => {
   btn.addEventListener("click", () => {
     const slot = Number(btn.dataset.slot);
-    if (animating || slot === activeSlot) return;
+    // btn.disabled already blocks this for a locked slot; re-checked here
+    // as a guard against calling loadSlot() any other way.
+    if (animating || slot === activeSlot || !isSlotUnlocked(slot)) return;
     loadSlot(slot);
   });
 });

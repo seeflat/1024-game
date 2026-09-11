@@ -66,6 +66,9 @@ is unavailable (e.g. private browsing) so the game stays playable — solved
 state just won't survive a reload in that case. Once a slot is solved it
 locks: no replay, no re-rolling a better move count.
 
+The 3 puzzles unlock in order — puzzle 2 stays locked (🔒) until puzzle 1 is
+solved, and puzzle 3 until both 1 and 2 are.
+
 ## Play
 
 Open `index.html` directly, or serve the folder statically, e.g.:

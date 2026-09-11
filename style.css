@@ -85,6 +85,13 @@ body {
   color: #fff;
 }
 
+.slot-tab.locked {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.slot-tab.locked:hover { background: var(--tile-empty); }
+
 .status {
   font-size: 0.85rem;
   color: var(--text-dim);
