@@ -50,6 +50,22 @@ backend, nothing to go down:
   board, and failing even that, a hand-built always-solvable fallback — so
   the page can never get stuck the way the original did.
 
+## Daily puzzles
+
+The site shows 3 fixed puzzles a day — the same three for every visitor,
+rotating at UTC midnight — like a small Wordle-style daily. There's still no
+backend: `generatePuzzle()` takes an optional `rand` function (defaulting to
+`Math.random`), and a daily puzzle just calls it with a seeded PRNG
+(`xmur3` + `mulberry32`, both in `game.js`) keyed by
+`` `1024-daily-v1-${date}-${slot}` ``. Same seed in, same board out, computed
+independently by every browser — that's the entire mechanism.
+
+Solved state is tracked in `localStorage` (namespaced `1024daily:v1:`, one
+record per day, pruned after 14 days), with an in-memory fallback if storage
+is unavailable (e.g. private browsing) so the game stays playable — solved
+state just won't survive a reload in that case. Once a slot is solved it
+locks: no replay, no re-rolling a better move count.
+
 ## Play
 
 Open `index.html` directly, or serve the folder statically, e.g.:
@@ -58,6 +74,7 @@ Open `index.html` directly, or serve the folder statically, e.g.:
 python3 -m http.server 8000
 ```
 
-Controls: click the rotate-left / rotate-right arrows, or use the
-`ArrowLeft` / `ArrowRight` keys. `Enter` resets the current puzzle. Merge
-every tile into a single tile to win.
+Pick a puzzle with the `1`/`2`/`3` tabs, then click the rotate-left /
+rotate-right arrows, or use the `ArrowLeft` / `ArrowRight` keys. `Enter`
+resets the puzzle currently shown (only while it's unsolved). Merge every
+tile into a single tile to win.

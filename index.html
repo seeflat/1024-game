@@ -9,6 +9,14 @@
   <body>
     <main class="card">
       <h1 class="title">1024</h1>
+      <div class="date-note" id="dateNote"></div>
+
+      <div class="slot-tabs" id="slotTabs">
+        <button class="slot-tab" data-slot="0" title="Daily puzzle 1">1</button>
+        <button class="slot-tab" data-slot="1" title="Daily puzzle 2">2</button>
+        <button class="slot-tab" data-slot="2" title="Daily puzzle 3">3</button>
+      </div>
+
       <div class="status" id="status">Try to merge all the tiles into one by only rotating the board.</div>
 
       <div class="board-wrap">
@@ -20,9 +28,10 @@
             <div class="win-sub">You won!</div>
             <div class="win-moves" id="winMoves"></div>
             <div class="win-hint hidden" id="winHint">
-              This puzzle can however be solved in fewer moves — try again to find the best path!
+              This puzzle can however be solved in fewer moves.
             </div>
-            <button class="link-btn" id="playAgainBtn">Play again</button>
+            <div class="win-comeback hidden" id="winComeback">Come back tomorrow for 3 new puzzles!</div>
+            <button class="link-btn hidden" id="winActionBtn">Next puzzle →</button>
           </div>
         </div>
       </div>

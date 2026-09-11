@@ -39,6 +39,52 @@ body {
   letter-spacing: 0.02em;
 }
 
+.date-note {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  margin-bottom: 14px;
+}
+
+.slot-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.slot-tab {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: none;
+  background: var(--tile-empty);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.slot-tab:hover { background: #dbeafe; }
+
+.slot-tab.active {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.slot-tab.solved {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.slot-tab.solved.active {
+  background: #16a34a;
+  color: #fff;
+}
+
 .status {
   font-size: 0.85rem;
   color: var(--text-dim);
@@ -120,6 +166,9 @@ body {
 .win-hint { font-size: 0.78rem; color: var(--text-dim); margin-top: 8px; max-width: 220px; }
 .win-hint.hidden { display: none; }
 
+.win-comeback { font-size: 0.85rem; color: var(--text-dim); margin-top: 16px; max-width: 220px; }
+.win-comeback.hidden { display: none; }
+
 .link-btn {
   margin-top: 16px;
   background: none;
@@ -130,6 +179,8 @@ body {
   text-decoration: underline;
   font-family: inherit;
 }
+
+.link-btn.hidden { display: none; }
 
 .controls {
   margin-top: 26px;

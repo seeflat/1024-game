@@ -149,11 +149,11 @@ function findSolution(initialBoard, maxDepth) {
   return null;
 }
 
-function shuffledCells() {
+function shuffledCells(rand = Math.random) {
   const cells = [];
   for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) cells.push([r, c]);
   for (let i = cells.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [cells[i], cells[j]] = [cells[j], cells[i]];
   }
   return cells;
@@ -168,7 +168,7 @@ function shuffledCells() {
 // opening board from ever having one lone giant tile, while still leaving
 // enough spread that boards aren't a monotonous wall of one value. Stops
 // early only if every part is already a 2 (nothing left to split).
-function partitionValue(target, count) {
+function partitionValue(target, count, rand = Math.random) {
   const parts = [target];
   while (parts.length < count) {
     const splittable = parts
@@ -177,7 +177,7 @@ function partitionValue(target, count) {
     if (splittable.length === 0) break;
 
     const totalWeight = splittable.reduce((sum, p) => sum + p.value, 0);
-    let r = Math.random() * totalWeight;
+    let r = rand() * totalWeight;
     let pick = splittable[splittable.length - 1];
     for (const p of splittable) {
       r -= p.value;
@@ -202,15 +202,18 @@ const MIN_SOLUTION = 5; // optimal-move count must land in this range: not a
 const MAX_SOLUTION = 10; // giveaway, not a marathon
 const SEARCH_DEPTH = MAX_SOLUTION + 2; // BFS ceiling when checking solvability
 
-// Builds one random candidate board (no solvability check yet).
-function buildCandidate() {
-  const target = TARGET_POOL[Math.floor(Math.random() * TARGET_POOL.length)];
-  const count = MIN_TILES + Math.floor(Math.random() * (MAX_TILES - MIN_TILES + 1));
-  const parts = partitionValue(target, count);
+// Builds one random candidate board (no solvability check yet). `rand`
+// (defaulting to Math.random) is threaded through every random choice, so
+// swapping in a seeded generator — see generateDailyPuzzle below — makes
+// the whole thing deterministic without changing a line of this logic.
+function buildCandidate(rand = Math.random) {
+  const target = TARGET_POOL[Math.floor(rand() * TARGET_POOL.length)];
+  const count = MIN_TILES + Math.floor(rand() * (MAX_TILES - MIN_TILES + 1));
+  const parts = partitionValue(target, count, rand);
   if (parts.length > SIZE * SIZE) return null;
 
   const board = emptyBoard();
-  const cells = shuffledCells();
+  const cells = shuffledCells(rand);
   parts.forEach((value, k) => {
     const [r, c] = cells[k];
     board[r][c] = value;
@@ -218,12 +221,12 @@ function buildCandidate() {
   return { board, target, maxTile: Math.max(...parts) };
 }
 
-function generatePuzzle() {
+function generatePuzzle(rand = Math.random) {
   // Full constraints: a bounded opening tile, a fairly full board, and a
   // solution that's neither trivial nor a slog. Succeeds ~100% of the time
   // well within this budget.
   for (let attempt = 0; attempt < 800; attempt++) {
-    const candidate = buildCandidate();
+    const candidate = buildCandidate(rand);
     if (
       !candidate ||
       candidate.maxTile < MIN_START_TILE ||
@@ -250,7 +253,7 @@ function generatePuzzle() {
   // Not expected to be reached in practice — it's here so a freak RNG streak
   // still yields a real puzzle rather than the trivial fallback below.
   for (let attempt = 0; attempt < 400; attempt++) {
-    const candidate = buildCandidate();
+    const candidate = buildCandidate(rand);
     if (!candidate || candidate.maxTile > MAX_START_TILE) continue;
     const solution = findSolution(candidate.board, 14);
     if (solution)
@@ -269,6 +272,128 @@ function generatePuzzle() {
   board[3][0] = 32;
   const solution = findSolution(board, 4);
   return { board, target: 64, solutionLength: solution ? solution.length : 1 };
+}
+
+// ---- Seeded RNG, for deterministic daily puzzles ----
+//
+// xmur3 hashes a string into a 32-bit seed; mulberry32 turns that seed into
+// a fast, deterministic stream of floats in [0, 1) — standard, tiny,
+// dependency-free building blocks. Wiring one of these into buildCandidate
+// via the `rand` parameter above means every visitor's browser can
+// independently "generate" the exact same board from the same seed string,
+// with no server involved.
+function xmur3(str) {
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function () {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+
+function mulberry32(seed) {
+  let a = seed;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededRand(seedString) {
+  return mulberry32(xmur3(seedString)());
+}
+
+// One puzzle "pack" per UTC calendar day: DAILY_SLOTS fixed boards, the same
+// for every visitor. The version tag means a future change to the
+// generation algorithm can move to a new seed namespace (bumping to "v2")
+// instead of silently reusing old seeds against different logic.
+const DAILY_SLOTS = 3;
+const DAILY_SEED_VERSION = "v1";
+
+function dailyDateKey(date = new Date()) {
+  return date.toISOString().slice(0, 10); // UTC calendar day, e.g. "2026-09-11"
+}
+
+function generateDailyPuzzle(dateKey, slot) {
+  const rand = seededRand(`1024-daily-${DAILY_SEED_VERSION}-${dateKey}-${slot}`);
+  return generatePuzzle(rand);
+}
+
+// ---- Daily-solve storage ----
+//
+// One JSON record per calendar day, keyed by slot (0/1/2), holding each
+// slot's solve or null. Every access goes through try/catch with an
+// in-memory Map fallback, so a visitor with storage disabled (private
+// browsing, locked-down settings) still gets a fully playable session —
+// solved state just won't survive a reload for them.
+const DAILY_STORAGE_PREFIX = "1024daily:v1:";
+const memoryStorage = new Map();
+
+function readStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return memoryStorage.has(key) ? memoryStorage.get(key) : null;
+  }
+}
+
+function writeStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    memoryStorage.set(key, value);
+  }
+}
+
+function removeStorage(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    memoryStorage.delete(key);
+  }
+}
+
+function storageKeysWithPrefix(prefix) {
+  try {
+    return Object.keys(localStorage).filter((k) => k.startsWith(prefix));
+  } catch {
+    return [...memoryStorage.keys()].filter((k) => k.startsWith(prefix));
+  }
+}
+
+function loadDailyRecord(dateKey) {
+  const empty = { 0: null, 1: null, 2: null };
+  const raw = readStorage(DAILY_STORAGE_PREFIX + dateKey);
+  if (!raw) return empty;
+  try {
+    const parsed = JSON.parse(raw);
+    return { 0: parsed[0] || null, 1: parsed[1] || null, 2: parsed[2] || null };
+  } catch {
+    return empty;
+  }
+}
+
+function saveDailyRecord(dateKey, record) {
+  writeStorage(DAILY_STORAGE_PREFIX + dateKey, JSON.stringify(record));
+}
+
+// Drops any daily record older than 14 days so a long-term visitor doesn't
+// accumulate unbounded localStorage. ISO date strings sort lexicographically,
+// so this is a plain string comparison against the cutoff date.
+function pruneOldDailyRecords(dateKey) {
+  const cutoff = new Date(`${dateKey}T00:00:00Z`);
+  cutoff.setUTCDate(cutoff.getUTCDate() - 14);
+  const cutoffKey = dailyDateKey(cutoff);
+  for (const key of storageKeysWithPrefix(DAILY_STORAGE_PREFIX)) {
+    if (key.slice(DAILY_STORAGE_PREFIX.length) < cutoffKey) removeStorage(key);
+  }
 }
 
 // ---- UI wiring ----
@@ -293,15 +418,22 @@ const STEP = CELL + GAP; // px moved per row of fall (the original used a flat 6
 
 const boardEl = document.getElementById("board");
 const statusEl = document.getElementById("status");
+const dateNoteEl = document.getElementById("dateNote");
+const slotTabEls = Array.from(document.querySelectorAll(".slot-tab"));
 const winOverlay = document.getElementById("winOverlay");
 const winMovesEl = document.getElementById("winMoves");
 const winHintEl = document.getElementById("winHint");
+const winComebackEl = document.getElementById("winComeback");
+const winActionBtn = document.getElementById("winActionBtn");
 const resetBtn = document.getElementById("resetBtn");
 const rotateLeftBtn = document.getElementById("rotateLeftBtn");
 const rotateRightBtn = document.getElementById("rotateRightBtn");
-const playAgainBtn = document.getElementById("playAgainBtn");
 const genNote = document.getElementById("genNote");
 const controlsEl = document.querySelector(".controls");
+
+let dateKey = ""; // today's UTC date key, e.g. "2026-09-11"
+let dailyRecord = { 0: null, 1: null, 2: null }; // this date's solves, by slot
+let activeSlot = 0; // which of the 3 daily slots is currently shown
 
 let initialBoard = null; // the puzzle's starting grid, restored on reset
 let board = null; // current 4x4 grid
@@ -401,7 +533,9 @@ function updateStatus() {
     moves > 0
       ? `${moves} move${moves > 1 ? "s" : ""}`
       : "Try to merge all the tiles into one by only rotating the board.";
-  resetBtn.classList.toggle("hidden", moves === 0);
+  // A solved daily slot can have moves > 0 but shouldn't offer a reset —
+  // that would let a player quietly re-attempt and overwrite today's result.
+  resetBtn.classList.toggle("hidden", moves === 0 || won);
 }
 
 // Mirrors the original's `:class="isAnimating ? 'opacity-10' : ''"` on the
@@ -411,21 +545,85 @@ function setAnimating(value) {
   controlsEl.classList.toggle("dimmed", value);
 }
 
-function newGame() {
-  const gen = generatePuzzle();
+function formatDateNote(key) {
+  const d = new Date(`${key}T00:00:00Z`);
+  const formatted = d.toLocaleDateString(undefined, {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `Daily puzzles · ${formatted}`;
+}
+
+// Reflects `dailyRecord`/`activeSlot` onto the 3 slot buttons: which one is
+// selected, and which are already solved (✓).
+function renderSlotTabs() {
+  slotTabEls.forEach((btn) => {
+    const slot = Number(btn.dataset.slot);
+    const solved = !!dailyRecord[slot];
+    btn.classList.toggle("active", slot === activeSlot);
+    btn.classList.toggle("solved", solved);
+    btn.textContent = solved ? "✓" : String(slot + 1);
+  });
+}
+
+// The first still-unsolved slot today, or null if all 3 are done.
+function nextUnsolvedSlot() {
+  for (let slot = 0; slot < DAILY_SLOTS; slot++) {
+    if (!dailyRecord[slot]) return slot;
+  }
+  return null;
+}
+
+// Points the win overlay's action at whatever makes sense next: another
+// unsolved puzzle today, or a "come back tomorrow" message once all 3 are done.
+function configureWinOverlayActions() {
+  const next = nextUnsolvedSlot();
+  if (next !== null) {
+    winActionBtn.textContent = "Next puzzle →";
+    winActionBtn.classList.remove("hidden");
+    winActionBtn.onclick = () => loadSlot(next);
+    winComebackEl.classList.add("hidden");
+  } else {
+    winActionBtn.classList.add("hidden");
+    winComebackEl.classList.remove("hidden");
+  }
+}
+
+// Loads one of today's 3 daily puzzles. If it's already been solved (per
+// dailyRecord, backed by localStorage), shows it locked in the solved state
+// instead of playable — the original site's "Play again" is gone in daily
+// mode: once a slot is solved, replaying it wouldn't change anything real.
+function loadSlot(slot) {
+  activeSlot = slot;
+  const gen = generateDailyPuzzle(dateKey, slot);
   initialBoard = cloneBoard(gen.board);
   board = cloneBoard(gen.board);
   solutionLength = gen.solutionLength;
-  moves = 0;
-  won = false;
+
+  const existing = dailyRecord[slot];
+  moves = existing ? existing.moves : 0;
+  won = !!existing;
+
   setAnimating(false);
-  winOverlay.classList.add("hidden");
-  rotateLeftBtn.classList.remove("hidden");
-  rotateRightBtn.classList.remove("hidden");
+  renderSlotTabs();
   updateStatus();
   buildBoardDOM();
   paintBoard(board);
   genNote.textContent = `Solvable in ${solutionLength} move${solutionLength === 1 ? "" : "s"}.`;
+
+  rotateLeftBtn.classList.toggle("hidden", won);
+  rotateRightBtn.classList.toggle("hidden", won);
+
+  if (won) {
+    winMovesEl.textContent = `You solved this puzzle in ${moves} move${moves > 1 ? "s" : ""}!`;
+    winHintEl.classList.toggle("hidden", moves <= solutionLength);
+    configureWinOverlayActions();
+    winOverlay.classList.remove("hidden");
+  } else {
+    winOverlay.classList.add("hidden");
+  }
 }
 
 // Rotate the whole board 90° left or right, then let tiles fall & merge
@@ -547,8 +745,20 @@ async function rotate(direction) {
 
   if (isWon(board)) {
     won = true;
-    winMovesEl.textContent = `You solved the puzzle in ${moves} move${moves > 1 ? "s" : ""}!`;
+    dailyRecord[activeSlot] = {
+      moves,
+      solutionLength,
+      solvedAt: new Date().toISOString(),
+    };
+    saveDailyRecord(dateKey, dailyRecord);
+    renderSlotTabs();
+    updateStatus(); // hides Reset now that `won` is true
+    rotateLeftBtn.classList.add("hidden");
+    rotateRightBtn.classList.add("hidden");
+
+    winMovesEl.textContent = `You solved this puzzle in ${moves} move${moves > 1 ? "s" : ""}!`;
     winHintEl.classList.toggle("hidden", moves <= solutionLength);
+    configureWinOverlayActions();
     winOverlay.classList.remove("hidden");
   }
 
@@ -558,7 +768,8 @@ async function rotate(direction) {
 // Shake the board and restore the original grid. Ported from HomeView.vue —
 // the data resets instantly underneath; the shake is just a flourish.
 async function reset() {
-  if (!board || animating || moves === 0) return;
+  // A solved daily slot can't be reset — see the note in updateStatus().
+  if (!board || animating || moves === 0 || won) return;
   setAnimating(true);
   moves = 0;
   won = false;
@@ -587,7 +798,14 @@ async function reset() {
 rotateLeftBtn.addEventListener("click", () => rotate("left"));
 rotateRightBtn.addEventListener("click", () => rotate("right"));
 resetBtn.addEventListener("click", reset);
-playAgainBtn.addEventListener("click", reset);
+
+slotTabEls.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const slot = Number(btn.dataset.slot);
+    if (animating || slot === activeSlot) return;
+    loadSlot(slot);
+  });
+});
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") rotate("left");
@@ -595,4 +813,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "Enter") reset();
 });
 
-newGame();
+dateKey = dailyDateKey();
+pruneOldDailyRecords(dateKey);
+dailyRecord = loadDailyRecord(dateKey);
+dateNoteEl.textContent = formatDateNote(dateKey);
+loadSlot(nextUnsolvedSlot() ?? 0);
