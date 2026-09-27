@@ -69,6 +69,15 @@ locks: no replay, no re-rolling a better move count.
 The 3 puzzles unlock in order — puzzle 2 stays locked (🔒) until puzzle 1 is
 solved, and puzzle 3 until both 1 and 2 are.
 
+Since merges are irreversible, a rotation can strand the board somewhere it
+can never collapse to a single tile again — the puzzle is still guaranteed
+solvable from its *starting* position, but a wrong turn can dead-end it.
+The game only checks for this lazily: the moment you try to rotate again,
+it re-runs the same BFS (`findSolution`) generation uses to verify a puzzle,
+now against the live board. If no sequence of further moves can ever win,
+that attempted move is cancelled, the board locks, and a banner points you
+at Reset instead.
+
 ## Play
 
 Open `index.html` directly, or serve the folder statically, e.g.:

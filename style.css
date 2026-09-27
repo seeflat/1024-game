@@ -187,6 +187,19 @@ body {
   font-family: inherit;
 }
 
+.dead-end-banner {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.78rem;
+  text-align: center;
+  max-width: 264px;
+}
+
+.dead-end-banner.hidden { display: none; }
+
 .link-btn.hidden { display: none; }
 
 .controls {

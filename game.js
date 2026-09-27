@@ -202,6 +202,17 @@ const MIN_SOLUTION = 5; // optimal-move count must land in this range: not a
 const MAX_SOLUTION = 10; // giveaway, not a marathon
 const SEARCH_DEPTH = MAX_SOLUTION + 2; // BFS ceiling when checking solvability
 
+// BFS ceiling for the *in-play* dead-end check (see isDeadEnd, further
+// down) — deliberately much deeper than SEARCH_DEPTH. SEARCH_DEPTH is a
+// tight cap used to bias generation toward short puzzles; a shallow cap
+// here would misreport a board as unsolvable just because winning it takes
+// more moves than the cap, which would be a false alarm. findSolution
+// dedupes visited boards, so raising this doesn't cost much — it's bounded
+// by the size of the reachable state space, not 2^depth — and 30 is
+// comfortably past anything this generator produces (measured: a single
+// call at this depth on a mid-game board takes well under a millisecond).
+const DEAD_END_DEPTH = 30;
+
 // Builds one random candidate board (no solvability check yet). `rand`
 // (defaulting to Math.random) is threaded through every random choice, so
 // swapping in a seeded generator — see generateDailyPuzzle below — makes
@@ -425,6 +436,7 @@ const winMovesEl = document.getElementById("winMoves");
 const winHintEl = document.getElementById("winHint");
 const winComebackEl = document.getElementById("winComeback");
 const winActionBtn = document.getElementById("winActionBtn");
+const deadEndBannerEl = document.getElementById("deadEndBanner");
 const resetBtn = document.getElementById("resetBtn");
 const rotateLeftBtn = document.getElementById("rotateLeftBtn");
 const rotateRightBtn = document.getElementById("rotateRightBtn");
@@ -441,6 +453,7 @@ let moves = 0;
 let solutionLength = 0;
 let animating = false; // true while a rotate/reset animation is playing
 let won = false;
+let deadEnd = false; // true once a rotate attempt has proven the board unwinnable
 
 let tileEls = null; // [r][c] -> .tile element (created once, reused)
 let labelEls = null; // [r][c] -> .tile-label element
@@ -623,6 +636,8 @@ function loadSlot(slot) {
   const existing = dailyRecord[slot];
   moves = existing ? existing.moves : 0;
   won = !!existing;
+  deadEnd = false;
+  deadEndBannerEl.classList.add("hidden");
 
   setAnimating(false);
   renderSlotTabs();
@@ -647,7 +662,21 @@ function loadSlot(slot) {
 // Rotate the whole board 90° left or right, then let tiles fall & merge
 // (like gravity) until the board is stable. Ported from HomeView.vue.
 async function rotate(direction) {
-  if (!board || animating || won) return;
+  if (!board || animating || won || deadEnd) return;
+
+  // Lazy dead-end check: only searched for when the player actually
+  // attempts another move (not proactively after every move settles). If
+  // no sequence of further rotations can ever reach a win, cancel this
+  // attempt, lock the board, and say so instead of animating a move that
+  // can only ever lead nowhere.
+  if (!findSolution(board, DEAD_END_DEPTH)) {
+    deadEnd = true;
+    deadEndBannerEl.classList.remove("hidden");
+    rotateLeftBtn.classList.add("hidden");
+    rotateRightBtn.classList.add("hidden");
+    return;
+  }
+
   setAnimating(true);
 
   const angle = direction === "left" ? -90 : 90;
@@ -791,7 +820,11 @@ async function reset() {
   setAnimating(true);
   moves = 0;
   won = false;
+  deadEnd = false;
   winOverlay.classList.add("hidden");
+  deadEndBannerEl.classList.add("hidden");
+  rotateLeftBtn.classList.remove("hidden");
+  rotateRightBtn.classList.remove("hidden");
 
   const shake = anime({
     targets: boardEl,
