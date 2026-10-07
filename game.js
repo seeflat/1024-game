@@ -198,6 +198,9 @@ const MIN_TILES = 6;
 const MAX_TILES = 10;
 const MIN_START_TILE = 16; // the board must hold at least one tile this big…
 const MAX_START_TILE = 64; // …and none bigger — keeps the opening interesting
+const MAX_SMALLEST_TILE = 4; // the smallest tile must be a 2 or 4, never bigger.
+// Board total and tile count are fixed, so small tiles squeeze the big ones
+// too: with this cap most boards top out at 16 or 32, and a 64 is rare.
 const MIN_SOLUTION = 5; // optimal-move count must land in this range: not a
 const MAX_SOLUTION = 10; // giveaway, not a marathon
 const SEARCH_DEPTH = MAX_SOLUTION + 2; // BFS ceiling when checking solvability
@@ -229,19 +232,25 @@ function buildCandidate(rand = Math.random) {
     const [r, c] = cells[k];
     board[r][c] = value;
   });
-  return { board, target, maxTile: Math.max(...parts) };
+  return {
+    board,
+    target,
+    maxTile: Math.max(...parts),
+    minTile: Math.min(...parts),
+  };
 }
 
 function generatePuzzle(rand = Math.random) {
-  // Full constraints: a bounded opening tile, a fairly full board, and a
-  // solution that's neither trivial nor a slog. Succeeds ~100% of the time
-  // well within this budget.
+  // Full constraints: a bounded opening tile, small tiles to start with, a
+  // fairly full board, and a solution that's neither trivial nor a slog.
+  // Succeeds ~100% of the time well within this budget (~8 tries on average).
   for (let attempt = 0; attempt < 800; attempt++) {
     const candidate = buildCandidate(rand);
     if (
       !candidate ||
       candidate.maxTile < MIN_START_TILE ||
-      candidate.maxTile > MAX_START_TILE
+      candidate.maxTile > MAX_START_TILE ||
+      candidate.minTile > MAX_SMALLEST_TILE
     )
       continue;
 
@@ -322,9 +331,9 @@ function seededRand(seedString) {
 }
 
 // One puzzle "pack" per UTC calendar day: DAILY_SLOTS fixed boards, the same
-// for every visitor. The version tag means a future change to the
-// generation algorithm can move to a new seed namespace (bumping to "v2")
-// instead of silently reusing old seeds against different logic.
+// for every visitor. The version tag means a change to the generation
+// algorithm moves to a new seed namespace instead of silently reusing old
+// seeds against different logic. v2: smallest-tile cap (MAX_SMALLEST_TILE).
 const DAILY_SLOTS = 3;
 const DAILY_SEED_VERSION = "v1";
 

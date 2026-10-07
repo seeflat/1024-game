@@ -41,8 +41,9 @@ backend, nothing to go down:
 - `generatePuzzle()` builds a random board whose tile values are a
   power-of-two partition of a target (64–512), splitting the largest chunks
   first so the opening never has one lone giant tile. It then keeps only
-  boards that are a good puzzle: 6–10 tiles, largest tile 16–64, and a
-  breadth-first search over the two moves (rotate left/right) proving an
+  boards that are a good puzzle: 6–10 tiles, smallest tile 2 or 4, largest
+  tile 16–64, and a breadth-first search over the two moves (rotate
+  left/right) proving an
   optimal solution of 5–10 moves. So every puzzle served is provably
   solvable and its optimal move count is known.
 - If generation somehow can't find a board meeting all of that (it always
