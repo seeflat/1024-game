@@ -58,7 +58,7 @@ rotating at UTC midnight — like a small Wordle-style daily. There's still no
 backend: `generatePuzzle()` takes an optional `rand` function (defaulting to
 `Math.random`), and a daily puzzle just calls it with a seeded PRNG
 (`xmur3` + `mulberry32`, both in `game.js`) keyed by
-`` `1024-daily-v2-${date}-${slot}` ``. Same seed in, same board out, computed
+`` `1024-daily-v1-${date}-${slot}` ``. Same seed in, same board out, computed
 independently by every browser — that's the entire mechanism.
 
 Solved state is tracked in `localStorage` (namespaced `1024daily:v1:`, one
