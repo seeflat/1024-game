@@ -61,7 +61,7 @@ backend: `generatePuzzle()` takes an optional `rand` function (defaulting to
 `` `1024-daily-v2-${date}-${slot}` ``. Same seed in, same board out, computed
 independently by every browser — that's the entire mechanism.
 
-Solved state is tracked in `localStorage` (namespaced `1024daily:v2:`, one
+Solved state is tracked in `localStorage` (namespaced `1024daily:v1:`, one
 record per day, pruned after 14 days), with an in-memory fallback if storage
 is unavailable (e.g. private browsing) so the game stays playable — solved
 state just won't survive a reload in that case. Once a slot is solved it

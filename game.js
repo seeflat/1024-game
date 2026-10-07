@@ -333,10 +333,7 @@ function seededRand(seedString) {
 // One puzzle "pack" per UTC calendar day: DAILY_SLOTS fixed boards, the same
 // for every visitor. The version tag means a change to the generation
 // algorithm moves to a new seed namespace instead of silently reusing old
-// seeds against different logic. Bump it together with
-// DAILY_STORAGE_PREFIX below, so a slot solved against yesterday's version
-// of today's board doesn't show as solved on the new one.
-// v2: smallest-tile cap (MAX_SMALLEST_TILE).
+// seeds against different logic. v2: smallest-tile cap (MAX_SMALLEST_TILE).
 const DAILY_SLOTS = 3;
 const DAILY_SEED_VERSION = "v2";
 
@@ -356,8 +353,7 @@ function generateDailyPuzzle(dateKey, slot) {
 // in-memory Map fallback, so a visitor with storage disabled (private
 // browsing, locked-down settings) still gets a fully playable session —
 // solved state just won't survive a reload for them.
-const DAILY_STORAGE_PREFIX = "1024daily:v2:";
-const LEGACY_STORAGE_PREFIXES = ["1024daily:v1:"]; // swept by pruneOldDailyRecords
+const DAILY_STORAGE_PREFIX = "1024daily:v1:";
 const memoryStorage = new Map();
 
 function readStorage(key) {
@@ -412,11 +408,6 @@ function saveDailyRecord(dateKey, record) {
 // accumulate unbounded localStorage. ISO date strings sort lexicographically,
 // so this is a plain string comparison against the cutoff date.
 function pruneOldDailyRecords(dateKey) {
-  // Records under an older namespace belong to boards that no longer exist.
-  for (const prefix of LEGACY_STORAGE_PREFIXES) {
-    for (const key of storageKeysWithPrefix(prefix)) removeStorage(key);
-  }
-
   const cutoff = new Date(`${dateKey}T00:00:00Z`);
   cutoff.setUTCDate(cutoff.getUTCDate() - 14);
   const cutoffKey = dailyDateKey(cutoff);
