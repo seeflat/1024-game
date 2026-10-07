@@ -41,8 +41,9 @@ backend, nothing to go down:
 - `generatePuzzle()` builds a random board whose tile values are a
   power-of-two partition of a target (64–512), splitting the largest chunks
   first so the opening never has one lone giant tile. It then keeps only
-  boards that are a good puzzle: 6–10 tiles, largest tile 16–64, and a
-  breadth-first search over the two moves (rotate left/right) proving an
+  boards that are a good puzzle: 6–10 tiles, smallest tile 2 or 4, largest
+  tile 16–64, and a breadth-first search over the two moves (rotate
+  left/right) proving an
   optimal solution of 5–10 moves. So every puzzle served is provably
   solvable and its optimal move count is known.
 - If generation somehow can't find a board meeting all of that (it always
@@ -57,10 +58,10 @@ rotating at UTC midnight — like a small Wordle-style daily. There's still no
 backend: `generatePuzzle()` takes an optional `rand` function (defaulting to
 `Math.random`), and a daily puzzle just calls it with a seeded PRNG
 (`xmur3` + `mulberry32`, both in `game.js`) keyed by
-`` `1024-daily-v1-${date}-${slot}` ``. Same seed in, same board out, computed
+`` `1024-daily-v2-${date}-${slot}` ``. Same seed in, same board out, computed
 independently by every browser — that's the entire mechanism.
 
-Solved state is tracked in `localStorage` (namespaced `1024daily:v1:`, one
+Solved state is tracked in `localStorage` (namespaced `1024daily:v2:`, one
 record per day, pruned after 14 days), with an in-memory fallback if storage
 is unavailable (e.g. private browsing) so the game stays playable — solved
 state just won't survive a reload in that case. Once a slot is solved it
