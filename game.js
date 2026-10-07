@@ -335,7 +335,7 @@ function seededRand(seedString) {
 // algorithm moves to a new seed namespace instead of silently reusing old
 // seeds against different logic. v2: smallest-tile cap (MAX_SMALLEST_TILE).
 const DAILY_SLOTS = 3;
-const DAILY_SEED_VERSION = "v2";
+const DAILY_SEED_VERSION = "v1";
 
 function dailyDateKey(date = new Date()) {
   return date.toISOString().slice(0, 10); // UTC calendar day, e.g. "2026-09-11"
