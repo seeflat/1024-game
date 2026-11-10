@@ -73,11 +73,11 @@ solved, and puzzle 3 until both 1 and 2 are.
 Since merges are irreversible, a rotation can strand the board somewhere it
 can never collapse to a single tile again — the puzzle is still guaranteed
 solvable from its *starting* position, but a wrong turn can dead-end it.
-The game only checks for this lazily: the moment you try to rotate again,
-it re-runs the same BFS (`findSolution`) generation uses to verify a puzzle,
-now against the live board. If no sequence of further moves can ever win,
-that attempted move is cancelled, the board locks, and a banner points you
-at Reset instead.
+The game doesn't stop you at that point: you can keep playing a lost board
+for as long as anything on it can still merge. Only once no sequence of
+rotations can combine two tiles any more (`canStillMerge`, checked the
+moment you try to rotate again) is that attempted move cancelled, the board
+locked, and a banner shown pointing you at Reset.
 
 ## Play
 

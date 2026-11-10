@@ -112,14 +112,45 @@ function applyMove(board, dir) {
   return gravityMergeFull(rotated);
 }
 
-function isWon(board) {
+function countTiles(board) {
   let count = 0;
   for (const row of board) for (const v of row) if (v !== 0) count++;
-  return count === 1;
+  return count;
+}
+
+function isWon(board) {
+  return countTiles(board) === 1;
 }
 
 function boardKey(board) {
   return board.map((row) => row.join(",")).join("|");
+}
+
+// True if some sequence of rotations from `board` can still merge two tiles.
+// This is deliberately weaker than "can still be won": a board that can no
+// longer collapse to one tile stays playable for as long as anything on it
+// can still combine. Searches every position reachable without a merge (a
+// small, finite set — rotations just reshuffle the same tiles) and stops at
+// the first move that leaves fewer tiles.
+function canStillMerge(board) {
+  const tiles = countTiles(board);
+  const visited = new Set([boardKey(board)]);
+  let frontier = [board];
+  while (frontier.length > 0) {
+    const next = [];
+    for (const current of frontier) {
+      for (const dir of ["left", "right"]) {
+        const moved = applyMove(current, dir);
+        if (countTiles(moved) < tiles) return true;
+        const key = boardKey(moved);
+        if (visited.has(key)) continue;
+        visited.add(key);
+        next.push(moved);
+      }
+    }
+    frontier = next;
+  }
+  return false;
 }
 
 // Breadth-first search over the two possible moves at each step. Small
@@ -204,17 +235,6 @@ const MAX_SMALLEST_TILE = 4; // the smallest tile must be a 2 or 4, never bigger
 const MIN_SOLUTION = 5; // optimal-move count must land in this range: not a
 const MAX_SOLUTION = 10; // giveaway, not a marathon
 const SEARCH_DEPTH = MAX_SOLUTION + 2; // BFS ceiling when checking solvability
-
-// BFS ceiling for the *in-play* dead-end check (see isDeadEnd, further
-// down) — deliberately much deeper than SEARCH_DEPTH. SEARCH_DEPTH is a
-// tight cap used to bias generation toward short puzzles; a shallow cap
-// here would misreport a board as unsolvable just because winning it takes
-// more moves than the cap, which would be a false alarm. findSolution
-// dedupes visited boards, so raising this doesn't cost much — it's bounded
-// by the size of the reachable state space, not 2^depth — and 30 is
-// comfortably past anything this generator produces (measured: a single
-// call at this depth on a mid-game board takes well under a millisecond).
-const DEAD_END_DEPTH = 30;
 
 // Builds one random candidate board (no solvability check yet). `rand`
 // (defaulting to Math.random) is threaded through every random choice, so
@@ -462,7 +482,7 @@ let moves = 0;
 let solutionLength = 0;
 let animating = false; // true while a rotate/reset animation is playing
 let won = false;
-let deadEnd = false; // true once a rotate attempt has proven the board unwinnable
+let deadEnd = false; // true once a rotate attempt finds nothing can merge any more
 
 let tileEls = null; // [r][c] -> .tile element (created once, reused)
 let labelEls = null; // [r][c] -> .tile-label element
@@ -674,11 +694,11 @@ async function rotate(direction) {
   if (!board || animating || won || deadEnd) return;
 
   // Lazy dead-end check: only searched for when the player actually
-  // attempts another move (not proactively after every move settles). If
-  // no sequence of further rotations can ever reach a win, cancel this
-  // attempt, lock the board, and say so instead of animating a move that
-  // can only ever lead nowhere.
-  if (!findSolution(board, DEAD_END_DEPTH)) {
+  // attempts another move (not proactively after every move settles). The
+  // board only counts as dead once nothing on it can ever merge again — a
+  // position that can't be won any more stays playable until then. At that
+  // point cancel this attempt, lock the board, and say so.
+  if (!canStillMerge(board)) {
     deadEnd = true;
     deadEndBannerEl.classList.remove("hidden");
     rotateLeftBtn.classList.add("hidden");
